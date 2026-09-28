@@ -1,0 +1,10 @@
+.git/
+.env
+.casual/
+.sessions/
+**/node_modules/
+**/.venv/
+.opencode/package.json
+.opencode/package-lock.json
+.opencode/bun.lock
+.opencode/.gitignore
