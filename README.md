@@ -2,6 +2,25 @@
 
 这个工作区使用 OpenCode 的三个主 agent：`serious`（默认，共享记忆）、`casual`（专享记忆）和 `temp`（临时聊天）。项目配置见 `opencode.jsonc`，工作区规则见 `AGENTS.md`。
 
+## 聊天 agent
+
+仓库提供三个可在 OpenCode 界面中切换的主 agent，分别适合深入讨论、轻松交流和临时问答：
+
+| Agent | 风格与适用场景 | 记忆方式 |
+| --- | --- | --- |
+| `serious`（默认） | 平实、直接，先给结论再解释依据；适合日常事务、深入讨论和需要持续跟进的话题。 | 读写共享记忆 `MEMORY.md` 和 `.sessions/`。 |
+| `casual` | 像熟悉的朋友一样自然轻松，适度幽默；适合闲聊、兴趣话题和日常小事。 | 可读取共享记忆，默认将记录写入自己的 `.casual/` 空间；明确要求分享时才写入共享记忆。 |
+| `temp` | 自然、简洁，围绕当前聊天中提供的信息回答；适合一次性问答和临时讨论。 | 不读取或写入工作区记忆，文件与命令工具已禁用。 |
+
+### 记忆与切换
+
+- `serious` 和 `casual` 会在会话开始时回顾各自可访问的记忆，在一个话题或任务结束时保存摘要和可供后续接续的细节，并将有长期价值的信息整理到长期记忆中。明确说“不要记录”即可跳过该话题的记忆写入。
+- `serious` 使用的共享记录保存在 `.sessions/`；`casual` 的专享记录保存在 `.casual/`，`serious` 不访问该目录。两者都通过各自的 `INDEX.md` 索引历史话题。
+- 切换 agent 会保留当前会话已有的消息。需要隔离先前上下文时，应新建会话再选择 `temp`；从 `casual` 转到 `serious` 且需要隔离专享内容时，也应新建会话。
+- `temp` 的“不记录”指工作区记忆文件；OpenCode 自身的会话保存机制仍然适用。
+
+三个 agent 的提示词与权限定义位于 [`.opencode/agents/`](.opencode/agents/)，记忆规则见 [`AGENTS.md`](AGENTS.md)。修改配置后，重启 OpenCode 生效。
+
 ## 在容器中运行
 
 宿主机需要 Git、Docker 和 Docker Compose。在本目录执行：
@@ -10,7 +29,7 @@
 ./start.sh --build
 ```
 
-容器在后台运行 OpenCode Web，默认只监听宿主机的 `127.0.0.1:4096`，浏览器打开 <http://127.0.0.1:4096>。镜像内置 OpenCode 1.18.32、Bun、uv 和 Git。首次使用时，可在界面中配置模型服务。
+容器在后台运行 OpenCode Web，默认在宿主机的 `0.0.0.0:14096` 监听，本机浏览器打开 <http://127.0.0.1:14096>。镜像内置 OpenCode 1.18.32、Bun、uv 和 Git。首次使用时，可在界面中配置模型服务。
 
 查看状态与日志、停止服务：
 
@@ -22,7 +41,7 @@ docker compose down
 
 ### 设置监听地址和端口
 
-需要让同一网络的其他设备访问时，设置监听地址为 `0.0.0.0`，并选择端口（示例为 `8090`）：
+默认监听地址 `0.0.0.0` 可供同一网络的其他设备访问；如需指定端口（示例为 `8090`）并设置访问密码：
 
 ```bash
 export OPENCODE_BIND_ADDRESS=0.0.0.0
@@ -69,7 +88,7 @@ git config --global user.email 'you@example.com'
 
 ### 工作区与依赖
 
-Compose 将当前目录挂载到容器的 `/home/bun/workspace`，在容器中修改文件会同步到宿主机。OpenCode 的登录和会话数据保存在 `opencode-data` 卷中，容器退出后仍可继续使用。镜像包含 `AGENTS.md`、`MEMORY.md`、`opencode.jsonc` 和 `.opencode/` 配置；`.sessions/`、`.casual/` 等本地会话记录不打包进镜像，挂载工作区后可在容器内使用。
+Compose 将当前目录挂载到容器的 `/home/bun/workspace`，在容器中修改文件会同步到宿主机。`start.sh` 会创建 `projects/`，可在容器内的 `/home/bun/workspace/projects/` 开发项目；该目录被 Git 和 Docker 构建上下文忽略。OpenCode 的登录和会话数据保存在 `opencode-data` 卷中，容器退出后仍可继续使用。镜像包含 `AGENTS.md`、`MEMORY.md`、`opencode.jsonc` 和 `.opencode/` 配置；`.sessions/`、`.casual/` 等本地会话记录不打包进镜像，挂载工作区后可在容器内使用。
 
 需要使用 uv 或 Bun 管理项目依赖时，可以进入正在运行的容器：
 

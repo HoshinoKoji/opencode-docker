@@ -2,6 +2,7 @@
 set -eu
 
 workspace=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+mkdir -p "$workspace/projects"
 
 # Let Git resolve the host's global configuration, including XDG paths.
 GIT_AUTHOR_NAME=$(git config --global --get user.name || true)

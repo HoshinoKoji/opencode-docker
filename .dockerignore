@@ -2,6 +2,7 @@
 .env
 .casual/
 .sessions/
+projects/
 **/node_modules/
 **/.venv/
 .opencode/package.json

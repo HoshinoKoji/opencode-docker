@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This is a personal chat workspace: a Git repository with no commits, application code, or build/test/lint workflow at present. Day-to-day contents consist of Markdown notes and temporary scripts; do not search for a package manifest or test commands.
+This is a personal chat workspace tracked in Git. It contains OpenCode configuration, a Docker Compose setup for running OpenCode, and Markdown notes and temporary scripts. It has no application package manifest or project test/lint workflow; see `README.md` for container usage.
 
 This project defines three switchable custom primary agents: `serious` (the default, writes to shared memory), `casual` (writes to its own private memory), and `temp` (temporary chat, with no memory access or recording). Each agent prompt defines its conversational style; this file defines memory file formats and procedures.
 

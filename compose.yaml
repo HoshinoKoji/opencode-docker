@@ -18,7 +18,7 @@ services:
       - --hostname
       - ${OPENCODE_BIND_ADDRESS:-0.0.0.0}
       - --port
-      - ${OPENCODE_PORT:-4096}
+      - ${OPENCODE_PORT:-14096} # Escape the default port
     environment:
       - GIT_AUTHOR_NAME
       - GIT_AUTHOR_EMAIL
