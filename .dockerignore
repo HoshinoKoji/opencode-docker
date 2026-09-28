@@ -1,6 +1,5 @@
 .git/
 .env
-.casual/
 .sessions/
 projects/
 **/node_modules/

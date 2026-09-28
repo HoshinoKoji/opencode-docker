@@ -13,16 +13,16 @@ This project defines three switchable custom primary agents: `serious` (the defa
 
 ### File conventions
 - Shared memory (`serious` reads and writes; `casual` may read): `MEMORY.md`, `.sessions/YYYY-MM-DD-<topic>.md`, and `.sessions/INDEX.md`.
-- Private `casual` memory (read and written by `casual` among these three custom modes): `.casual/MEMORY.md`, `.casual/YYYY-MM-DD-<topic>.md`, and `.casual/INDEX.md`. `serious` does not access this directory. Other agents, such as the built-in `build` agent, are not governed by these mode-specific conventions.
+- Private `casual` memory (read and written by `casual` among these three custom modes): `.sessions/casual/MEMORY.md`, `.sessions/casual/YYYY-MM-DD-<topic>.md`, and `.sessions/casual/INDEX.md`. `serious` does not access this subdirectory. Other agents, such as the built-in `build` agent, are not governed by these mode-specific conventions.
 - Use a short English or pinyin slug for each record's topic; if that slug is already used on the same day, choose another unique one. Put index entries in **reverse chronological order**, one per line: `date | topic | one-sentence conclusion | key preferences`. Keep only still-relevant entries in long-term memory; mark obsolete entries as “deprecated” in place rather than deleting them.
 
 ### At the start of each session (`serious` and `casual` only; proactively, without prompting)
-1. `serious` reads shared `MEMORY.md` and approximately the five most recent entries in `.sessions/INDEX.md`. `casual` also reads `.casual/MEMORY.md` and approximately the five most recent entries in `.casual/INDEX.md`. Skip files that do not exist.
+1. `serious` reads shared `MEMORY.md` and approximately the five most recent entries in `.sessions/INDEX.md`. `casual` also reads `.sessions/casual/MEMORY.md` and approximately the five most recent entries in `.sessions/casual/INDEX.md`. Skip files that do not exist.
 2. Open relevant past records for details. `serious` searches only shared memory; `casual` may search both spaces.
 3. Use the review to inform this session. When past memory conflicts with what the user says now, follow the user's current statement and update memory in the space this mode may write to. `casual` does not automatically update shared memory.
 
 ### Recording conversations
-- `serious`: by default, make one record in shared memory when each topic or task concludes; do not read or write `.casual/`.
+- `serious`: by default, make one record in shared memory when each topic or task concludes; do not read or write `.sessions/casual/`.
 - `casual`: by default, make one record in its private memory when each topic or task concludes; write to shared memory only when the user explicitly asks to share specific information.
 - Neither mode needs to record every reply. If a topic is unfinished when switching topics or ending the session, record the current progress and open questions.
 - `temp`: do not read or write either memory space, review past conversations, or retroactively record chats in this mode. To save a discussion, ask the user to switch to another mode and discuss what to record there.

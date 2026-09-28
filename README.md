@@ -9,13 +9,13 @@
 | Agent | 风格与适用场景 | 记忆方式 |
 | --- | --- | --- |
 | `serious`（默认） | 平实、直接，先给结论再解释依据；适合日常事务、深入讨论和需要持续跟进的话题。 | 读写共享记忆 `MEMORY.md` 和 `.sessions/`。 |
-| `casual` | 像熟悉的朋友一样自然轻松，适度幽默；适合闲聊、兴趣话题和日常小事。 | 可读取共享记忆，默认将记录写入自己的 `.casual/` 空间；明确要求分享时才写入共享记忆。 |
+| `casual` | 像熟悉的朋友一样自然轻松，适度幽默；适合闲聊、兴趣话题和日常小事。 | 可读取共享记忆，默认将记录写入自己的 `.sessions/casual/` 空间；明确要求分享时才写入共享记忆。 |
 | `temp` | 自然、简洁，围绕当前聊天中提供的信息回答；适合一次性问答和临时讨论。 | 不读取或写入工作区记忆，文件与命令工具已禁用。 |
 
 ### 记忆与切换
 
 - `serious` 和 `casual` 会在会话开始时回顾各自可访问的记忆，在一个话题或任务结束时保存摘要和可供后续接续的细节，并将有长期价值的信息整理到长期记忆中。明确说“不要记录”即可跳过该话题的记忆写入。
-- `serious` 使用的共享记录保存在 `.sessions/`；`casual` 的专享记录保存在 `.casual/`，`serious` 不访问该目录。两者都通过各自的 `INDEX.md` 索引历史话题。
+- `serious` 使用的共享记录保存在 `.sessions/` 顶层；`casual` 的专享记录保存在 `.sessions/casual/`，`serious` 不访问该子目录。两者都通过各自的 `INDEX.md` 索引历史话题。
 - 切换 agent 会保留当前会话已有的消息。需要隔离先前上下文时，应新建会话再选择 `temp`；从 `casual` 转到 `serious` 且需要隔离专享内容时，也应新建会话。
 - `temp` 的“不记录”指工作区记忆文件；OpenCode 自身的会话保存机制仍然适用。
 
@@ -88,7 +88,7 @@ git config --global user.email 'you@example.com'
 
 ### 工作区与依赖
 
-Compose 将当前目录挂载到容器的 `/home/bun/workspace`，在容器中修改文件会同步到宿主机。`start.sh` 会创建 `projects/`，可在容器内的 `/home/bun/workspace/projects/` 开发项目；该目录被 Git 和 Docker 构建上下文忽略。OpenCode 的登录和会话数据保存在 `opencode-data` 卷中，容器退出后仍可继续使用。镜像包含 `AGENTS.md`、`MEMORY.md`、`opencode.jsonc` 和 `.opencode/` 配置；`.sessions/`、`.casual/` 等本地会话记录不打包进镜像，挂载工作区后可在容器内使用。
+Compose 将当前目录挂载到容器的 `/home/bun/workspace`，在容器中修改文件会同步到宿主机。`start.sh` 会创建 `projects/`，可在容器内的 `/home/bun/workspace/projects/` 开发项目；该目录被 Git 和 Docker 构建上下文忽略。OpenCode 的登录和会话数据保存在 `opencode-data` 卷中，容器退出后仍可继续使用。镜像包含 `AGENTS.md`、`MEMORY.md`、`opencode.jsonc` 和 `.opencode/` 配置；`.sessions/`（含 `casual/`）等本地会话记录不打包进镜像，挂载工作区后可在容器内使用。
 
 需要使用 uv 或 Bun 管理项目依赖时，可以进入正在运行的容器：
 

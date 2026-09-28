@@ -3,14 +3,14 @@
   "default_agent": "serious",
   "permission": {
     "read": {
-      ".casual/**": "deny"
+      ".sessions/casual/**": "deny"
     },
     "edit": {
       "*": "ask",
       "AGENTS.md": "allow",
       "MEMORY.md": "allow",
       ".sessions/**": "allow",
-      ".casual/**": "deny"
+      ".sessions/casual/**": "deny"
     },
     "bash": {
       "*": "ask",
