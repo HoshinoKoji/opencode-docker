@@ -3,10 +3,12 @@
   "default_agent": "serious",
   "permission": {
     "read": {
+      "projects/**": "allow",
       ".sessions/casual/**": "deny"
     },
     "edit": {
       "*": "ask",
+      "projects/**": "allow",
       "AGENTS.md": "allow",
       "MEMORY.md": "allow",
       ".sessions/**": "allow",
