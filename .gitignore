@@ -1,6 +1,7 @@
 MEMORY.md
 .sessions/
 .env
+/compose.override.yaml
 projects/
 config/opencode/node_modules/
 config/opencode/package.json

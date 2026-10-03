@@ -5,6 +5,8 @@ services:
       # On Linux this also reaches a host proxy listening on 127.0.0.1.
       network: host
       args:
+        - UV_VERSION=${UV_VERSION:-latest}
+        - OPENCODE_VERSION=${OPENCODE_VERSION:-latest}
         - HTTP_PROXY
         - HTTPS_PROXY
         - ALL_PROXY

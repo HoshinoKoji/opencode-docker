@@ -1,37 +1,37 @@
-# OpenCode 个人工作区
+# OpenCode Personal Workspace
 
-这个工作区使用 OpenCode 的三个主 agent：`serious`（默认，共享记忆）、`casual`（专享记忆）和 `temp`（临时聊天）。容器全局配置见 [`config/opencode/opencode.jsonc`](config/opencode/opencode.jsonc)，工作区规则见 `AGENTS.md`。
+This workspace provides three primary OpenCode agents: `serious` (the default, with shared memory), `casual` (with private memory), and `temp` (for temporary conversations). The container's global configuration is in [`config/opencode/opencode.jsonc`](config/opencode/opencode.jsonc), and workspace rules are in `AGENTS.md`.
 
-## 聊天 agent
+## Chat Agents
 
-仓库提供三个可在 OpenCode 界面中切换的主 agent，分别适合深入讨论、轻松交流和临时问答：
+Switch between these three primary agents in the OpenCode interface for in-depth discussion, relaxed conversation, or temporary questions:
 
-| Agent | 风格与适用场景 | 记忆方式 |
+| Agent | Style and use cases | Memory |
 | --- | --- | --- |
-| `serious`（默认） | 平实、直接，先给结论再解释依据；适合日常事务、深入讨论和需要持续跟进的话题。 | 读写共享记忆 `MEMORY.md` 和 `.sessions/`。 |
-| `casual` | 像熟悉的朋友一样自然轻松，适度幽默；适合闲聊、兴趣话题和日常小事。 | 可读取共享记忆，默认将记录写入自己的 `.sessions/casual/` 空间；明确要求分享时才写入共享记忆。 |
-| `temp` | 自然、简洁，围绕当前聊天中提供的信息回答；适合一次性问答和临时讨论。 | 不读取或写入工作区记忆，文件与命令工具已禁用。 |
+| `serious` (default) | Calm and direct, leading with conclusions before explaining the reasoning. Suited to everyday tasks, in-depth discussions, and topics that need follow-up. | Reads and writes shared memory in `MEMORY.md` and `.sessions/`. |
+| `casual` | Natural and relaxed, like a familiar friend, with light humor. Suited to casual chats, interests, and everyday matters. | Can read shared memory. Writes to its private `.sessions/casual/` space by default, and writes to shared memory when explicitly asked to share information. |
+| `temp` | Natural and concise, using information provided in the current conversation. Suited to one-off questions and temporary discussions. | Workspace memory access and recording are disabled, along with file and command tools. |
 
-### 记忆与切换
+### Memory and Agent Switching
 
-- `serious` 和 `casual` 会在会话开始时回顾各自可访问的记忆，在一个话题或任务结束时保存摘要和可供后续接续的细节，并将有长期价值的信息整理到长期记忆中。明确说“不要记录”即可跳过该话题的记忆写入。
-- `serious` 使用的共享记录保存在 `.sessions/` 顶层；`casual` 的专享记录保存在 `.sessions/casual/`，`serious` 不访问该子目录。两者都通过各自的 `INDEX.md` 索引历史话题。
-- 切换 agent 会保留当前会话已有的消息。需要隔离先前上下文时，应新建会话再选择 `temp`；从 `casual` 转到 `serious` 且需要隔离专享内容时，也应新建会话。
-- `temp` 的“不记录”指工作区记忆文件；OpenCode 自身的会话保存机制仍然适用。
+- `serious` and `casual` review the memory available to them at the start of a session. When a topic or task concludes, they save a summary and details for future follow-up, and add enduring information to long-term memory. Explicitly say "do not record" to skip memory updates for a topic.
+- Shared records for `serious` live at the top level of `.sessions/`. Private records for `casual` live in `.sessions/casual/`, which `serious` does not access. Each space has its own `INDEX.md` for finding past topics.
+- Switching agents preserves the messages already in the current session. To isolate earlier context, start a new session before selecting `temp`. Also start a new session when switching from `casual` to `serious` if private content needs to be isolated.
+- The recording restriction in `temp` applies to workspace memory files. OpenCode's own session persistence still applies.
 
-三个 agent 的提示词与权限定义位于 [`config/opencode/agents/`](config/opencode/agents/)，在容器内作为全局 agent 加载，记忆规则见 [`AGENTS.md`](AGENTS.md)。修改配置后，重启 OpenCode 生效。
+Agent prompts and permissions are defined in [`config/opencode/agents/`](config/opencode/agents/) and loaded as global agents inside the container. Memory rules are in [`AGENTS.md`](AGENTS.md). Restart OpenCode after changing its configuration.
 
-## 在容器中运行
+## Running in a Container
 
-宿主机需要 Git、Docker 和 Docker Compose。在本目录执行：
+The host needs Git, Docker, and Docker Compose. Looking up the latest versions during a build also requires curl. Run this command from the repository directory:
 
 ```bash
 ./start.sh --build
 ```
 
-容器在后台运行 OpenCode Web，默认在宿主机的 `0.0.0.0:14096` 监听，本机浏览器打开 <http://127.0.0.1:14096>。镜像内置 OpenCode 1.18.32、Bun、uv 和 Git。首次使用时，可在界面中配置模型服务。
+The container runs OpenCode Web in the background, listening on the host at `0.0.0.0:14096` by default. Open <http://127.0.0.1:14096> in a local browser. The image includes the versions of OpenCode and uv selected at build time, along with Bun and Git. Configure a model provider in the interface on first use.
 
-查看状态与日志、停止服务：
+Check the status, follow logs, or stop the service:
 
 ```bash
 docker compose ps
@@ -39,22 +39,36 @@ docker compose logs -f opencode
 docker compose down
 ```
 
-### 设置监听地址和端口
+### Selecting Build Versions
 
-默认监听地址 `0.0.0.0` 可供同一网络的其他设备访问；如需指定端口（示例为 `8090`）并设置访问密码：
+When you run `./start.sh --build`, the script looks up exact version numbers from the latest stable releases on the official uv and OpenCode GitHub repositories. In an interactive terminal, it prompts for each version: press Enter to use the latest release, or enter a specific version number. Version numbers may include a `v` prefix.
+
+You can also set one or both versions through environment variables ahead of time. Explicit versions are used directly for the build. For example:
+
+```bash
+UV_VERSION=0.12.19 OPENCODE_VERSION=1.18.32 ./start.sh --build
+```
+
+Versions that are unset or set to `latest` trigger a latest-release lookup. Non-interactive runs automatically use the lookup results. When both versions are explicitly specified, the build can proceed without curl on the host. A failed lookup prints an error and exits; check your network connection or specify a version before retrying.
+
+The `--build` option triggers version lookups and interactive selection. Use `./start.sh` for routine startup or runtime configuration updates. Selected versions are passed to the Dockerfile through Compose's `build.args` and shown in the script output and image build logs.
+
+### Setting the Listen Address and Port
+
+The default listen address, `0.0.0.0`, allows access from other devices on the same network. To choose a port (such as `8090`) and set an access password:
 
 ```bash
 export OPENCODE_BIND_ADDRESS=0.0.0.0
 export OPENCODE_PORT=8090
-export OPENCODE_SERVER_PASSWORD='换成自己的密码'
+export OPENCODE_SERVER_PASSWORD='replace-with-your-password'
 ./start.sh --build
 ```
 
-然后访问 `http://<宿主机IP>:8090`，用户名默认为 `opencode`；需要更改时设置 `OPENCODE_SERVER_USERNAME`。外部访问请设置密码。这里使用 Linux host 网络，端口由 OpenCode 直接在宿主机监听，`OPENCODE_BIND_ADDRESS` 控制可访问范围，`OPENCODE_PORT` 控制监听端口；无需另外配置 Docker 端口映射。修改变量后重新执行 `./start.sh` 生效。
+Then open `http://<host-ip>:8090`. The default username is `opencode`; set `OPENCODE_SERVER_USERNAME` to change it. Set a password when allowing access from other devices. With Linux host networking, OpenCode listens directly on the host: `OPENCODE_BIND_ADDRESS` controls the listening interface, and `OPENCODE_PORT` controls the port. Run `./start.sh` again after changing these variables.
 
-### 使用宿主机代理
+### Using a Host Proxy
 
-如果代理监听在宿主机的 `127.0.0.1:7890`，先在当前终端设置环境变量，再构建和运行；按实际端口修改示例：
+If a proxy listens on the host at `127.0.0.1:7890`, set these environment variables in your terminal before building and running. Adjust the port to match your proxy:
 
 ```bash
 export HTTP_PROXY=http://127.0.0.1:7890
@@ -63,46 +77,73 @@ export HTTPS_PROXY="$HTTP_PROXY"
 ./start.sh --build
 ```
 
-`compose.yaml` 会将 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY` 传给构建过程和运行中的容器，也会在运行时透传对应的小写变量。构建与运行均使用 Linux host 网络，因此容器可以访问宿主机的回环地址代理；代理地址由环境变量提供，不会写入镜像。
+`compose.yaml` passes `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` to both the build and the running container. It also passes their lowercase equivalents at runtime. Both building and running use Linux host networking, so the container can reach a proxy on the host's loopback address. Proxy addresses are supplied through environment variables rather than stored in the image.
 
-### 配置 Git 提交身份
+### Configuring Git Commit Identity
 
-`start.sh` 在宿主机通过 `git config --global` 读取 `user.name` 和 `user.email`，通过环境变量将这两个值作为作者和提交者身份传入容器。全局配置的文件位置由 Git 自行解析，支持 `~/.gitconfig` 和 XDG 配置路径。
+`start.sh` reads `user.name` and `user.email` on the host using `git config --global`, then passes them into the container as the author and committer identity through environment variables. Git resolves the global configuration location itself, supporting both `~/.gitconfig` and XDG configuration paths.
 
-可以在宿主机检查当前全局身份：
+Check the current global identity on the host:
 
 ```bash
 git config --global --get user.name
 git config --global --get user.email
 ```
 
-首次配置时，在宿主机执行：
+To configure it for the first time, run these commands on the host:
 
 ```bash
-git config --global user.name '你的名字'
+git config --global user.name 'Your Name'
 git config --global user.email 'you@example.com'
 ./start.sh
 ```
 
-脚本执行 `docker compose up -d`，附加参数会原样转发，例如 `./start.sh --build`。宿主机更新身份后，重新执行 `./start.sh` 即可应用，无需重新构建镜像。全局身份尚未配置时仍可启动服务，Git 提交需要先补齐姓名和邮箱。直接使用 `docker compose up` 时，需要自行提供这四个环境变量：`GIT_AUTHOR_NAME`、`GIT_AUTHOR_EMAIL`、`GIT_COMMITTER_NAME`、`GIT_COMMITTER_EMAIL`。
+The script runs `docker compose up -d` and forwards additional arguments as provided, such as `./start.sh --build`. After updating the host identity, run `./start.sh` again to apply it; rebuilding the image is unnecessary. The service can start before a global identity is configured, but Git commits require a name and email. When using `docker compose up` directly, supply these four environment variables yourself: `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, and `GIT_COMMITTER_EMAIL`.
 
-### 工作区与依赖
+### Mounting Existing Projects and Read-Only Directories
 
-Compose 将当前目录挂载到容器的 `/home/bun/workspace`，在容器中修改文件会同步到宿主机。`start.sh` 会创建 `projects/`，可在容器内的 `/home/bun/workspace/projects/` 开发项目；该目录被 Git 和 Docker 构建上下文忽略。OpenCode 的登录和会话数据保存在 `opencode-data` 卷中，容器退出后仍可继续使用。
+Mount existing directories from anywhere on the host into the same OpenCode container by specifying their paths in a local `compose.override.yaml`. The repository provides [`compose.override.example.yaml`](compose.override.example.yaml) with examples for a writable project directory and a read-only reference directory.
 
-`config/opencode/` 单独挂载到容器的 `/home/bun/.config/opencode/`，其中的 `opencode.jsonc` 和 `agents/` 作为全局配置加载，在容器内各项目目录中均可使用；各项目自己的配置仍可覆盖全局设置。修改宿主机的配置后，执行 `docker compose restart opencode`，并退出、重新启动已打开的 OpenCode TUI，即可加载新配置。
+Copy the example in the repository root:
 
-镜像包含工作区的 `AGENTS.md`、`MEMORY.md`，以及放在 `/home/bun/.config/opencode/` 的全局配置；`.sessions/`（含 `casual/`）等本地会话记录不打包进镜像，挂载工作区后可在容器内使用。
+```bash
+cp compose.override.example.yaml compose.override.yaml
+```
 
-需要使用 uv 或 Bun 管理项目依赖时，可以进入正在运行的容器：
+Edit `compose.override.yaml`:
+
+- Set `source` to an existing directory on the host. The example uses absolute paths; relative paths are also supported and are resolved relative to this repository. The example's `bind.create_host_path: false` requires the source directory to exist.
+- Set `target` to the path used to access the directory inside the container, preferably `/home/bun/workspace/projects/<directory-name>`. Use a distinct target path for each directory.
+- `read_only: false` creates a writable mount, so changes inside the container update the original host directory. `read_only: true` creates a read-only mount suitable for reference documentation or source lookup.
+
+After setting the actual paths, inspect the merged configuration and start the service:
+
+```bash
+docker compose config
+./start.sh
+```
+
+`start.sh` sets the repository as the Compose project directory, allowing Compose to discover `compose.yaml` and the optional `compose.override.yaml` automatically. Additional mounts are merged into the same `opencode` service by their container target paths, alongside the workspace, global configuration, and data volume from the base configuration. The local `compose.override.yaml` is ignored by Git and excluded from the Docker build context.
+
+After adding, removing, or changing mounts, run `./start.sh` again. Compose recreates the container to apply configuration changes without rebuilding the image. `docker compose restart` restarts the existing container without applying mount changes. To remove all additional mounts, delete the local `compose.override.yaml` and run `./start.sh` again.
+
+### Workspace and Dependencies
+
+Compose mounts this repository at `/home/bun/workspace` inside the container. File changes inside the container are reflected on the host. `start.sh` creates `projects/` for development at `/home/bun/workspace/projects/`; Git ignores this directory, and it is excluded from the Docker build context. OpenCode authentication and session data are stored in the persistent `opencode-data` volume for reuse after the container exits.
+
+`config/opencode/` is mounted separately at `/home/bun/.config/opencode/` inside the container. Its `opencode.jsonc` and `agents/` are loaded as global configuration for all project directories in the container. Project-specific configuration can override global settings. After changing the configuration on the host, run `docker compose restart opencode` and quit and restart any open OpenCode TUI instances to load the new settings.
+
+The image includes the workspace's `AGENTS.md` and `MEMORY.md`, along with global configuration at `/home/bun/.config/opencode/`. Local conversation records such as `.sessions/` (including `casual/`) are available through the workspace mount and are excluded from the image.
+
+To manage project dependencies with uv or Bun, open a shell in the running container:
 
 ```bash
 docker compose exec opencode sh
 ```
 
-在对应项目目录初始化后使用 `uv add <包名>` 或 `bun add <包名>`。容器以 UID 1000 的 `bun` 用户运行，挂载的工作区需要对该用户可写。
+Initialize your project in its directory, then use `uv add <package>` or `bun add <package>`. The container runs as the `bun` user with UID 1000, so the mounted workspace must be writable by that user.
 
-需要使用终端交互界面时，可以在正在运行的容器中启动 OpenCode TUI：
+To use the terminal interface, start OpenCode TUI in the running container:
 
 ```bash
 docker compose exec opencode opencode

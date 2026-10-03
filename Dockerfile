@@ -1,8 +1,11 @@
+ARG UV_VERSION=latest
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-binaries
+
 FROM oven/bun:debian
 
 # Docker's predefined HTTP(S)_PROXY / ALL_PROXY / NO_PROXY build args are
 # available to apt and bun when passed by the build command (see compose.yaml).
-COPY --from=ghcr.io/astral-sh/uv:0.12.19 /uv /uvx /usr/local/bin/
+COPY --from=uv-binaries /uv /uvx /usr/local/bin/
 
 USER root
 RUN apt-get update \
@@ -17,7 +20,7 @@ ENV HOME=/home/bun \
     PATH="/home/bun/.bun/bin:/home/bun/.local/bin:${PATH}"
 
 USER bun
-ARG OPENCODE_VERSION=1.18.32
+ARG OPENCODE_VERSION=latest
 RUN bun install -g "opencode-ai@${OPENCODE_VERSION}" \
     && opencode --version \
     && uv --version

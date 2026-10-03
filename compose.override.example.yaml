@@ -1,0 +1,20 @@
+# Copy to compose.override.yaml and replace the source paths with existing directories.
+# Relative source paths are resolved from this repository.
+services:
+  opencode:
+    volumes:
+      # Writable project: edits in the container update the original host files.
+      - type: bind
+        source: /absolute/path/to/project-a
+        target: /home/bun/workspace/projects/project-a
+        read_only: false
+        bind:
+          create_host_path: false
+
+      # Read-only reference directory: useful for documentation or source lookup.
+      - type: bind
+        source: /absolute/path/to/reference-library
+        target: /home/bun/workspace/projects/reference-library
+        read_only: true
+        bind:
+          create_host_path: false
