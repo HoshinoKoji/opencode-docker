@@ -36,6 +36,7 @@ services:
       - OPENCODE_SERVER_USERNAME
     volumes:
       - .:/home/bun/workspace
+      - ./config/opencode:/home/bun/.config/opencode
       - opencode-data:/home/bun/.local/share/opencode
 
 volumes:

@@ -1,6 +1,6 @@
 # OpenCode 个人工作区
 
-这个工作区使用 OpenCode 的三个主 agent：`serious`（默认，共享记忆）、`casual`（专享记忆）和 `temp`（临时聊天）。项目配置见 `opencode.jsonc`，工作区规则见 `AGENTS.md`。
+这个工作区使用 OpenCode 的三个主 agent：`serious`（默认，共享记忆）、`casual`（专享记忆）和 `temp`（临时聊天）。容器全局配置见 [`config/opencode/opencode.jsonc`](config/opencode/opencode.jsonc)，工作区规则见 `AGENTS.md`。
 
 ## 聊天 agent
 
@@ -19,7 +19,7 @@
 - 切换 agent 会保留当前会话已有的消息。需要隔离先前上下文时，应新建会话再选择 `temp`；从 `casual` 转到 `serious` 且需要隔离专享内容时，也应新建会话。
 - `temp` 的“不记录”指工作区记忆文件；OpenCode 自身的会话保存机制仍然适用。
 
-三个 agent 的提示词与权限定义位于 [`.opencode/agents/`](.opencode/agents/)，记忆规则见 [`AGENTS.md`](AGENTS.md)。修改配置后，重启 OpenCode 生效。
+三个 agent 的提示词与权限定义位于 [`config/opencode/agents/`](config/opencode/agents/)，在容器内作为全局 agent 加载，记忆规则见 [`AGENTS.md`](AGENTS.md)。修改配置后，重启 OpenCode 生效。
 
 ## 在容器中运行
 
@@ -88,7 +88,11 @@ git config --global user.email 'you@example.com'
 
 ### 工作区与依赖
 
-Compose 将当前目录挂载到容器的 `/home/bun/workspace`，在容器中修改文件会同步到宿主机。`start.sh` 会创建 `projects/`，可在容器内的 `/home/bun/workspace/projects/` 开发项目；该目录被 Git 和 Docker 构建上下文忽略。OpenCode 的登录和会话数据保存在 `opencode-data` 卷中，容器退出后仍可继续使用。镜像包含 `AGENTS.md`、`MEMORY.md`、`opencode.jsonc` 和 `.opencode/` 配置；`.sessions/`（含 `casual/`）等本地会话记录不打包进镜像，挂载工作区后可在容器内使用。
+Compose 将当前目录挂载到容器的 `/home/bun/workspace`，在容器中修改文件会同步到宿主机。`start.sh` 会创建 `projects/`，可在容器内的 `/home/bun/workspace/projects/` 开发项目；该目录被 Git 和 Docker 构建上下文忽略。OpenCode 的登录和会话数据保存在 `opencode-data` 卷中，容器退出后仍可继续使用。
+
+`config/opencode/` 单独挂载到容器的 `/home/bun/.config/opencode/`，其中的 `opencode.jsonc` 和 `agents/` 作为全局配置加载，在容器内各项目目录中均可使用；各项目自己的配置仍可覆盖全局设置。修改宿主机的配置后，执行 `docker compose restart opencode`，并退出、重新启动已打开的 OpenCode TUI，即可加载新配置。
+
+镜像包含工作区的 `AGENTS.md`、`MEMORY.md`，以及放在 `/home/bun/.config/opencode/` 的全局配置；`.sessions/`（含 `casual/`）等本地会话记录不打包进镜像，挂载工作区后可在容器内使用。
 
 需要使用 uv 或 Bun 管理项目依赖时，可以进入正在运行的容器：
 

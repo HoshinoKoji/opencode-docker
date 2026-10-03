@@ -8,8 +8,8 @@ USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /home/bun/workspace /home/bun/.local/share/opencode /home/bun/.bun/bin \
-    && chown -R bun:bun /home/bun/workspace /home/bun/.local /home/bun/.bun
+    && mkdir -p /home/bun/workspace /home/bun/.config/opencode /home/bun/.local/share/opencode /home/bun/.bun/bin \
+    && chown -R bun:bun /home/bun/workspace /home/bun/.config /home/bun/.local /home/bun/.bun
 
 ENV HOME=/home/bun \
     BUN_INSTALL=/home/bun/.bun \
@@ -23,7 +23,7 @@ RUN bun install -g "opencode-ai@${OPENCODE_VERSION}" \
     && uv --version
 
 WORKDIR /home/bun/workspace
-COPY --chown=bun:bun AGENTS.md MEMORY.md opencode.jsonc ./
-COPY --chown=bun:bun .opencode/ .opencode/
+COPY --chown=bun:bun AGENTS.md MEMORY.md ./
+COPY --chown=bun:bun config/opencode/ /home/bun/.config/opencode/
 
 ENTRYPOINT ["opencode"]
