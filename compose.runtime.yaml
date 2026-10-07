@@ -1,0 +1,85 @@
+# Shared OpenCode runtime service fragment.
+#
+# A project service inherits this definition with `extends`:
+#
+#   services:
+#     my-service:
+#       extends:
+#         file: ${OPENCODE_DOCKER_ROOT:-../opencode-docker}/compose.runtime.yaml
+#         service: opencode-runtime
+#
+# `extends` merges a single service and does not import top-level resources, so
+# the consuming Compose file must also declare the named volumes this fragment
+# references:
+#
+#   volumes:
+#     opencode-config:
+#     opencode-data:
+#     opencode-cache:
+#     opencode-cargo:
+#
+# The host configuration and skills sources are deliberately declared by the
+# consuming service, because relative bind sources in an extended file are
+# ambiguous across repositories. Mount a read-only configuration source at
+# /opt/opencode-config-source; the entrypoint mirrors it into the instance
+# config volume on every start.
+services:
+  opencode-runtime:
+    image: ${OPENCODE_IMAGE:-ghcr.io/hoshinokoji/opencode-runtime:0.1.0}
+    working_dir: ${OPENCODE_WORKING_DIR:-/home/bun/workspace}
+    stdin_open: true
+    tty: true
+    init: true
+    command:
+      - opencode
+      - serve
+      - --hostname
+      - 0.0.0.0
+      - --port
+      - ${OPENCODE_PORT:-4096}
+    environment:
+      OPENCODE_UID: "${OPENCODE_UID:-1000}"
+      OPENCODE_GID: "${OPENCODE_GID:-1000}"
+      OPENCODE_HOME: "${OPENCODE_HOME:-/home/bun}"
+      HOME: "${OPENCODE_HOME:-/home/bun}"
+      XDG_CONFIG_HOME: "${OPENCODE_HOME:-/home/bun}/.config"
+      XDG_DATA_HOME: "${OPENCODE_HOME:-/home/bun}/.local/share"
+      XDG_CACHE_HOME: "${OPENCODE_HOME:-/home/bun}/.cache"
+      CARGO_HOME: "${OPENCODE_HOME:-/home/bun}/.cargo"
+      OPENCODE_PORT: "${OPENCODE_PORT:-4096}"
+      GIT_AUTHOR_NAME: "${GIT_AUTHOR_NAME:-}"
+      GIT_AUTHOR_EMAIL: "${GIT_AUTHOR_EMAIL:-}"
+      GIT_COMMITTER_NAME: "${GIT_COMMITTER_NAME:-}"
+      GIT_COMMITTER_EMAIL: "${GIT_COMMITTER_EMAIL:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENCODE_API_KEY: "${OPENCODE_API_KEY:-}"
+      OPENCODE_SERVER_USERNAME: "${OPENCODE_SERVER_USERNAME:-}"
+      OPENCODE_SERVER_PASSWORD: "${OPENCODE_SERVER_PASSWORD:-}"
+      HTTP_PROXY: "${OPENCODE_HTTP_PROXY-${HTTP_PROXY-${http_proxy:-}}}"
+      HTTPS_PROXY: "${OPENCODE_HTTPS_PROXY-${HTTPS_PROXY-${https_proxy:-}}}"
+      ALL_PROXY: "${ALL_PROXY-${all_proxy:-}}"
+      NO_PROXY: "${NO_PROXY-${no_proxy:-}}"
+      http_proxy: "${OPENCODE_HTTP_PROXY-${HTTP_PROXY-${http_proxy:-}}}"
+      https_proxy: "${OPENCODE_HTTPS_PROXY-${HTTPS_PROXY-${https_proxy:-}}}"
+      all_proxy: "${ALL_PROXY-${all_proxy:-}}"
+      no_proxy: "${NO_PROXY-${no_proxy:-}}"
+    volumes:
+      # Writable per-instance configuration. The entrypoint mirrors the shared
+      # read-only source into this volume and keeps generated dependencies here.
+      - type: volume
+        source: opencode-config
+        target: ${OPENCODE_HOME:-/home/bun}/.config/opencode
+      # Per-instance authentication and session state.
+      - type: volume
+        source: opencode-data
+        target: ${OPENCODE_HOME:-/home/bun}/.local/share/opencode
+      # Per-instance caches (bun, bunx, and other tools).
+      - type: volume
+        source: opencode-cache
+        target: ${OPENCODE_HOME:-/home/bun}/.cache
+      # Per-instance Cargo home: registry and installed binaries stay writable
+      # while the toolchain under /usr/local remains read-only.
+      - type: volume
+        source: opencode-cargo
+        target: ${OPENCODE_HOME:-/home/bun}/.cargo

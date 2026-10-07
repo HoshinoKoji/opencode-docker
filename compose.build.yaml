@@ -1,0 +1,23 @@
+# Local source build of the runtime image. Loaded by start.sh --build after it
+# has sourced versions.env, so the pinned versions are always in the
+# environment. The default compose.yaml uses the published GHCR image.
+services:
+  opencode:
+    image: ${OPENCODE_IMAGE:-ghcr.io/hoshinokoji/opencode-runtime:local}
+    build:
+      context: .
+      # Reaches a host proxy listening on 127.0.0.1 during the build.
+      network: host
+      # Reaches a bridge-network host proxy published as host.docker.internal.
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
+      args:
+        BUN_VERSION: ${BUN_VERSION:?load versions.env}
+        NODE_VERSION: ${NODE_VERSION:?load versions.env}
+        UV_VERSION: ${UV_VERSION:?load versions.env}
+        OPENCODE_VERSION: ${OPENCODE_VERSION:?load versions.env}
+        RUST_VERSION: ${RUST_VERSION:?load versions.env}
+        HTTP_PROXY: ${OPENCODE_HTTP_PROXY-${HTTP_PROXY-${http_proxy:-}}}
+        HTTPS_PROXY: ${OPENCODE_HTTPS_PROXY-${HTTPS_PROXY-${https_proxy:-}}}
+        ALL_PROXY: ${ALL_PROXY-${all_proxy:-}}
+        NO_PROXY: ${NO_PROXY-${no_proxy:-}}

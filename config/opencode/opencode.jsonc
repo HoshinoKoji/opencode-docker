@@ -1,27 +1,10 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "default_agent": "serious",
-  "permission": {
-    "read": {
-      "projects/**": "allow",
-      ".sessions/casual/**": "deny"
-    },
-    "edit": {
-      "*": "ask",
-      "projects/**": "allow",
-      "AGENTS.md": "allow",
-      "MEMORY.md": "allow",
-      ".sessions/**": "allow",
-      ".sessions/casual/**": "deny"
-    },
-    "bash": {
-      "*": "ask",
-      "git diff": "allow",
-      "git log *": "allow",
-      "git status *": "allow",
-      "git show *": "allow",
-      "git worktree list": "allow"
-    },
-    "question": "allow"
+  // Neutral development defaults shared by every project that uses the runtime.
+  // This file must not select a chat agent or restrict tools; chat behavior
+  // lives in config/chat/ and is loaded only by the personal chat workspace.
+  "autoupdate": false,
+  "skills": {
+    "paths": ["/opt/claude-skills"]
   }
 }

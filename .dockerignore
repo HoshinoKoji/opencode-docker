@@ -2,6 +2,10 @@
 .env
 /compose.override.yaml
 .sessions/
+MEMORY.md
+tests/
+__pycache__/
+.pytest_cache/
 projects/
 .opencode/
 **/node_modules/
@@ -10,3 +14,7 @@ config/opencode/package.json
 config/opencode/package-lock.json
 config/opencode/bun.lock
 config/opencode/.gitignore
+config/chat/package.json
+config/chat/package-lock.json
+config/chat/bun.lock
+config/chat/.gitignore

@@ -3,8 +3,15 @@ MEMORY.md
 .env
 /compose.override.yaml
 projects/
+__pycache__/
+.pytest_cache/
 config/opencode/node_modules/
 config/opencode/package.json
 config/opencode/package-lock.json
 config/opencode/bun.lock
 config/opencode/.gitignore
+config/chat/node_modules/
+config/chat/package.json
+config/chat/package-lock.json
+config/chat/bun.lock
+config/chat/.gitignore

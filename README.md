@@ -1,10 +1,26 @@
-# OpenCode Personal Workspace
+# OpenCode Runtime and Personal Workspace
 
-This workspace provides three primary OpenCode agents: `serious` (the default, with shared memory), `casual` (with private memory), and `temp` (for temporary conversations). The container's global configuration is in [`config/opencode/opencode.jsonc`](config/opencode/opencode.jsonc), and workspace rules are in `AGENTS.md`.
+This repository publishes a general-purpose OpenCode runtime image and runs a
+personal chat workspace on top of it. The runtime bundles OpenCode, uv, Node,
+Bun, Rust, C/C++ build tools, fish, ripgrep, and common shell tools on Ubuntu
+24.04. The chat workspace adds three primary agents: `serious` (the default,
+with shared memory), `casual` (with private memory), and `temp` (for temporary
+conversations).
+
+The runtime is designed for reuse by other projects: an extension image adds
+only its own toolchain, and a project Compose service extends the shared
+runtime fragment. See [Using the runtime in another project](#using-the-runtime-in-another-project).
+
+> **Bootstrap status:** the `ghcr.io/hoshinokoji/opencode-runtime` package has
+> not been published yet. Until the first `runtime-v*` release is pushed, build
+> the runtime from this checkout with `./start.sh --build` and point other
+> projects at `ghcr.io/hoshinokoji/opencode-runtime:local` through
+> `OPENCODE_RUNTIME_IMAGE`.
 
 ## Chat Agents
 
-Switch between these three primary agents in the OpenCode interface for in-depth discussion, relaxed conversation, or temporary questions:
+Switch between these three primary agents in the OpenCode interface for in-depth
+discussion, relaxed conversation, or temporary questions:
 
 | Agent | Style and use cases | Memory |
 | --- | --- | --- |
@@ -12,24 +28,43 @@ Switch between these three primary agents in the OpenCode interface for in-depth
 | `casual` | Natural and relaxed, like a familiar friend, with light humor. Suited to casual chats, interests, and everyday matters. | Can read shared memory. Writes to its private `.sessions/casual/` space by default, and writes to shared memory when explicitly asked to share information. |
 | `temp` | Natural and concise, using information provided in the current conversation. Suited to one-off questions and temporary discussions. | Workspace memory access and recording are disabled, along with file and command tools. |
 
+The chat agents and their permissions live in [`config/chat/`](config/chat/).
+They are loaded only by the chat workspace, not by the runtime's neutral
+development defaults in [`config/opencode/`](config/opencode/). Restart OpenCode
+after changing any configuration.
+
 ### Memory and Agent Switching
 
-- `serious` and `casual` review the memory available to them at the start of a session. When a topic or task concludes, they save a summary and details for future follow-up, and add enduring information to long-term memory. Explicitly say "do not record" to skip memory updates for a topic.
-- Shared records for `serious` live at the top level of `.sessions/`. Private records for `casual` live in `.sessions/casual/`, which `serious` does not access. Each space has its own `INDEX.md` for finding past topics.
-- Switching agents preserves the messages already in the current session. To isolate earlier context, start a new session before selecting `temp`. Also start a new session when switching from `casual` to `serious` if private content needs to be isolated.
-- The recording restriction in `temp` applies to workspace memory files. OpenCode's own session persistence still applies.
+- `serious` and `casual` review the memory available to them at the start of a
+  session. When a topic or task concludes, they save a summary and details for
+  future follow-up, and add enduring information to long-term memory.
+  Explicitly say "do not record" to skip memory updates for a topic.
+- Shared records for `serious` live at the top level of `.sessions/`. Private
+  records for `casual` live in `.sessions/casual/`, which `serious` does not
+  access. Each space has its own `INDEX.md` for finding past topics.
+- Switching agents preserves the messages already in the current session. To
+  isolate earlier context, start a new session before selecting `temp`. Also
+  start a new session when switching from `casual` to `serious` if private
+  content needs to be isolated.
+- The recording restriction in `temp` applies to workspace memory files.
+  OpenCode's own session persistence still applies.
 
-Agent prompts and permissions are defined in [`config/opencode/agents/`](config/opencode/agents/) and loaded as global agents inside the container. Memory rules are in [`AGENTS.md`](AGENTS.md). Restart OpenCode after changing its configuration.
+Memory rules are in [`AGENTS.md`](AGENTS.md).
 
 ## Running in a Container
 
-The host needs Git, Docker, and Docker Compose. Looking up the latest versions during a build also requires curl. Run this command from the repository directory:
+The host needs Git, Docker, and Docker Compose v2 (with `extends` support).
+Run the chat workspace from the repository directory:
 
 ```bash
-./start.sh --build
+./start.sh
 ```
 
-The container runs OpenCode Web in the background, listening on the host at `0.0.0.0:14096` by default. Open <http://127.0.0.1:14096> in a local browser. The image includes the versions of OpenCode and uv selected at build time, along with Bun and Git. Configure a model provider in the interface on first use.
+This pulls `ghcr.io/hoshinokoji/opencode-runtime` (default tag `0.1.0`) unless a
+local image with that name exists. The container runs OpenCode Web in the
+background, listening on the host at `0.0.0.0:14096` by default. Open
+<http://127.0.0.1:14096> in a local browser. Configure a model provider in the
+interface on first use; credentials are not required to start the container.
 
 Check the status, follow logs, or stop the service:
 
@@ -39,58 +74,116 @@ docker compose logs -f opencode
 docker compose down
 ```
 
-### Selecting Build Versions
+### Building From Source
 
-When you run `./start.sh --build`, the script looks up exact version numbers from the latest stable releases on the official uv and OpenCode GitHub repositories. In an interactive terminal, it prompts for each version: press Enter to use the latest release, or enter a specific version number. Version numbers may include a `v` prefix.
-
-You can also set one or both versions through environment variables ahead of time. Explicit versions are used directly for the build. For example:
+To build the runtime image locally from this checkout:
 
 ```bash
-UV_VERSION=0.12.19 OPENCODE_VERSION=1.18.32 ./start.sh --build
+./start.sh --build
 ```
 
-Versions that are unset or set to `latest` trigger a latest-release lookup. Non-interactive runs automatically use the lookup results. When both versions are explicitly specified, the build can proceed without curl on the host. A failed lookup prints an error and exits; check your network connection or specify a version before retrying.
+The build reads pinned tool versions from [`versions.env`](versions.env) and
+tags the local image `ghcr.io/hoshinokoji/opencode-runtime:local`. To test a
+development version, override a value in the environment:
 
-The `--build` option triggers version lookups and interactive selection. Use `./start.sh` for routine startup or runtime configuration updates. Selected versions are passed to the Dockerfile through Compose's `build.args` and shown in the script output and image build logs.
+```bash
+BUN_VERSION=1.3.15 ./start.sh --build
+```
 
-### Setting the Listen Address and Port
+`versions.env` is the single source of truth for local builds and the publish
+workflow; no build falls back to an implicit `latest`. The current pins are:
 
-The default listen address, `0.0.0.0`, allows access from other devices on the same network. To choose a port (such as `8090`) and set an access password:
+| Tool | Version |
+| --- | --- |
+| Bun | `1.3.14` |
+| Node.js | `24.15.0` |
+| uv | `0.12.23` |
+| OpenCode | `1.18.35` |
+| Rust | `1.99.0` |
+
+Build only, without starting the service:
+
+```bash
+set -a; . ./versions.env; set +a
+docker compose -f compose.yaml -f compose.build.yaml build opencode
+```
+
+### Publishing the Runtime
+
+The workflow [`.github/workflows/publish-runtime.yml`](.github/workflows/publish-runtime.yml)
+builds and pushes `ghcr.io/hoshinokoji/opencode-runtime` for `linux/amd64`
+only. It runs exclusively on manual `workflow_dispatch` or on tags matching
+`runtime-v*`; ordinary `main` commits do not publish.
+
+To publish a release, create and push a tag:
+
+```bash
+git tag runtime-v0.1.0
+git push origin runtime-v0.1.0
+```
+
+The image is built once with the version tag (`:0.1.0`), a commit-qualified tag
+(`:0.1.0-<sha>`), and OCI labels that record the source repository, revision,
+and version. Before pushing that exact image, the workflow validates the Compose
+files and shell syntax, checks the tool versions, verifies `opencode debug
+config` resolves the neutral defaults with no chat agent, compiles and runs a
+small Rust program and writes config/cache/cargo as both the default UID and a
+configured non-root UID, and checks command/argument passthrough. A `concurrency`
+group serializes publishes for the same version, and the workflow refuses to
+overwrite an existing version tag, so bump the version for a new release.
+
+The first published package is **private** by default. To let other projects
+pull it anonymously, open the package settings on GitHub
+(`https://github.com/users/HoshinoKoji/packages/container/opencode-runtime/settings`)
+and change its visibility to **Public**.
+
+Upgrade and roll back by changing the tag:
+
+- **Upgrade:** edit the `OPENCODE_RUNTIME_IMAGE` / image tag used by a project,
+  or `OPENCODE_IMAGE` here, to the new version.
+- **Roll back:** pin the previous version tag. Extension images must be rebuilt
+  when the runtime changes.
+
+### Selecting the Listen Address and Port
+
+The default listen address, `0.0.0.0`, allows access from other devices on the
+same network. To choose a port (such as `8090`) and set an access password:
 
 ```bash
 export OPENCODE_BIND_ADDRESS=0.0.0.0
 export OPENCODE_PORT=8090
 export OPENCODE_SERVER_PASSWORD='replace-with-your-password'
-./start.sh --build
+./start.sh
 ```
 
-Then open `http://<host-ip>:8090`. The default username is `opencode`; set `OPENCODE_SERVER_USERNAME` to change it. Set a password when allowing access from other devices. With Linux host networking, OpenCode listens directly on the host: `OPENCODE_BIND_ADDRESS` controls the listening interface, and `OPENCODE_PORT` controls the port. Run `./start.sh` again after changing these variables.
+Then open `http://<host-ip>:8090`. The default username is `opencode`; set
+`OPENCODE_SERVER_USERNAME` to change it. With host networking, OpenCode listens
+directly on the host: `OPENCODE_BIND_ADDRESS` controls the listening interface
+and `OPENCODE_PORT` controls the port.
 
 ### Using a Host Proxy
 
-If a proxy listens on the host at `127.0.0.1:7890`, set these environment variables in your terminal before building and running. Adjust the port to match your proxy:
+If a proxy listens on the host at `127.0.0.1:7890`, export the standard proxy
+variables before starting. The shared service passes `HTTP_PROXY`,
+`HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` (and their lowercase forms) to the
+container:
 
 ```bash
 export HTTP_PROXY=http://127.0.0.1:7890
 export HTTPS_PROXY="$HTTP_PROXY"
-
-./start.sh --build
+./start.sh
 ```
 
-`compose.yaml` passes `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` to both the build and the running container. It also passes their lowercase equivalents at runtime. Both building and running use Linux host networking, so the container can reach a proxy on the host's loopback address. Proxy addresses are supplied through environment variables rather than stored in the image.
+Host networking is the explicit choice that lets the container reach a proxy on
+the host's loopback address. Projects that do not need it use the default bridge
+network.
 
 ### Configuring Git Commit Identity
 
-`start.sh` reads `user.name` and `user.email` on the host using `git config --global`, then passes them into the container as the author and committer identity through environment variables. Git resolves the global configuration location itself, supporting both `~/.gitconfig` and XDG configuration paths.
-
-Check the current global identity on the host:
-
-```bash
-git config --global --get user.name
-git config --global --get user.email
-```
-
-To configure it for the first time, run these commands on the host:
+`start.sh` reads `user.name` and `user.email` on the host using
+`git config --global`, then passes them into the container as the author and
+committer identity. Git resolves the global configuration location itself,
+supporting both `~/.gitconfig` and XDG configuration paths.
 
 ```bash
 git config --global user.name 'Your Name'
@@ -98,53 +191,170 @@ git config --global user.email 'you@example.com'
 ./start.sh
 ```
 
-The script runs `docker compose up -d` and forwards additional arguments as provided, such as `./start.sh --build`. After updating the host identity, run `./start.sh` again to apply it; rebuilding the image is unnecessary. The service can start before a global identity is configured, but Git commits require a name and email. When using `docker compose up` directly, supply these four environment variables yourself: `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, and `GIT_COMMITTER_EMAIL`.
+When using `docker compose up` directly, supply `GIT_AUTHOR_NAME`,
+`GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, and `GIT_COMMITTER_EMAIL` yourself.
+
+### Workspace, Configuration, and State
+
+The chat workspace bind-mounts this repository at `/home/bun/workspace`.
+`start.sh` creates `projects/` for development at
+`/home/bun/workspace/projects/`; Git ignores this directory, and it is excluded
+from the Docker build context.
+
+Global OpenCode configuration is intentionally split:
+
+- The shared host preferences are bind-mounted **read-only** at
+  `/opt/opencode-config-source`. Both launchers prefer `$HOME/.config/opencode`
+  when present, otherwise the neutral [`config/opencode/`](config/opencode/).
+  Set `OPENCODE_CONFIG_SOURCE` to use the same source across all environments.
+- On every start the entrypoint mirrors that source into the writable
+  per-instance `opencode-config` volume at `/home/bun/.config/opencode`,
+  excluding generated dependency files. Plugin dependencies and caches stay in
+  the instance volume, so the host source is never modified and instances do not
+  share `node_modules`.
+- Because the mirror runs on every start, editing the source and restarting
+  reloads the new configuration, and deleting an agent in the source removes the
+  stale copy. OpenCode still merges global and project configuration natively.
+- The chat workspace additionally mounts [`config/chat/`](config/chat/)
+  read-only at `/opt/opencode-profile-source`. Its agents are copied into the
+  instance mirror, and its JSONC is loaded through native `OPENCODE_CONFIG`
+  precedence (after global preferences, before project settings). This preserves
+  shared models/providers while adding the `serious` default and memory rules.
+
+Without a source mount, the entrypoint seeds the baked neutral defaults from
+[`config/opencode/`](config/opencode/) once, so a plain `docker run` remains
+usable.
+
+OpenCode authentication and session data are stored in the persistent
+`opencode-data` volume (per Compose project). To reuse host credentials instead,
+add a read-only directory bind in `compose.override.yaml`:
+
+```yaml
+services:
+  opencode:
+    volumes:
+      - type: bind
+        source: ${HOME}/.local/share/opencode
+        target: /opt/opencode-auth-source
+        read_only: true
+        bind:
+          create_host_path: false
+```
+
+The entrypoint imports `auth.json`/`account.json` only when their instance copies
+are absent. Refreshed tokens remain writable in instance state, while the source
+stays unchanged. Credentials can also be configured in the interface on first
+run, with no credential bind.
+
+After changing configuration on the host, restart the container and quit and
+restart any open OpenCode TUI instances:
+
+```bash
+docker compose restart opencode
+```
 
 ### Mounting Existing Projects and Read-Only Directories
 
-Mount existing directories from anywhere on the host into the same OpenCode container by specifying their paths in a local `compose.override.yaml`. The repository provides [`compose.override.example.yaml`](compose.override.example.yaml) with examples for a writable project directory and a read-only reference directory.
-
-Copy the example in the repository root:
+Mount existing host directories into the same container with a local
+`compose.override.yaml`. Copy the example:
 
 ```bash
 cp compose.override.example.yaml compose.override.yaml
 ```
 
-Edit `compose.override.yaml`:
+Edit each `source` to an existing absolute directory and each `target` to a
+distinct path under `/home/bun/workspace/projects/<name>`. `read_only: false`
+creates a writable mount; `read_only: true` is suitable for reference material.
 
-- Set `source` to an existing directory on the host. The example uses absolute paths; relative paths are also supported and are resolved relative to this repository. The example's `bind.create_host_path: false` requires the source directory to exist.
-- Set `target` to the path used to access the directory inside the container, preferably `/home/bun/workspace/projects/<directory-name>`. Use a distinct target path for each directory.
-- `read_only: false` creates a writable mount, so changes inside the container update the original host directory. `read_only: true` creates a read-only mount suitable for reference documentation or source lookup.
+`./start.sh` uses Compose's automatic discovery of `compose.yaml` and
+`compose.override.yaml`. It explicitly re-adds `compose.override.yaml` when it
+loads build files with `-f`, so overrides are never silently dropped.
 
-After setting the actual paths, inspect the merged configuration and start the service:
+### Shell Access
 
-```bash
-docker compose config
-./start.sh
-```
-
-`start.sh` sets the repository as the Compose project directory, allowing Compose to discover `compose.yaml` and the optional `compose.override.yaml` automatically. Additional mounts are merged into the same `opencode` service by their container target paths, alongside the workspace, global configuration, and data volume from the base configuration. The local `compose.override.yaml` is ignored by Git and excluded from the Docker build context.
-
-After adding, removing, or changing mounts, run `./start.sh` again. Compose recreates the container to apply configuration changes without rebuilding the image. `docker compose restart` restarts the existing container without applying mount changes. To remove all additional mounts, delete the local `compose.override.yaml` and run `./start.sh` again.
-
-### Workspace and Dependencies
-
-Compose mounts this repository at `/home/bun/workspace` inside the container. File changes inside the container are reflected on the host. `start.sh` creates `projects/` for development at `/home/bun/workspace/projects/`; Git ignores this directory, and it is excluded from the Docker build context. OpenCode authentication and session data are stored in the persistent `opencode-data` volume for reuse after the container exits.
-
-`config/opencode/` is mounted separately at `/home/bun/.config/opencode/` inside the container. Its `opencode.jsonc` and `agents/` are loaded as global configuration for all project directories in the container. Project-specific configuration can override global settings. After changing the configuration on the host, run `docker compose restart opencode` and quit and restart any open OpenCode TUI instances to load the new settings.
-
-The image includes the workspace's `AGENTS.md` and `MEMORY.md`, along with global configuration at `/home/bun/.config/opencode/`. Local conversation records such as `.sessions/` (including `casual/`) are available through the workspace mount and are excluded from the image.
-
-To manage project dependencies with uv or Bun, open a shell in the running container:
+The service process runs as the host UID/GID (`OPENCODE_UID`/`OPENCODE_GID`),
+so mounted files keep the expected ownership. `docker compose exec` starts from
+the image's default user (root), so pass the host user explicitly for an
+equivalent shell:
 
 ```bash
-docker compose exec opencode sh
+docker compose exec -u "$(id -u):$(id -g)" opencode sh
+docker compose exec -u "$(id -u):$(id -g)" opencode opencode
 ```
 
-Initialize your project in its directory, then use `uv add <package>` or `bun add <package>`. The container runs as the `bun` user with UID 1000, so the mounted workspace must be writable by that user.
+## Using the Runtime in Another Project
 
-To use the terminal interface, start OpenCode TUI in the running container:
+An extension image starts `FROM ghcr.io/hoshinokoji/opencode-runtime:<version>`
+and adds only its project-specific toolchain. A project Compose service extends
+the shared fragment with `extends` (not `include`, which conflicts on resource
+names rather than merging the same service):
+
+```yaml
+services:
+  my-service:
+    extends:
+      file: ${OPENCODE_DOCKER_ROOT:-../opencode-docker}/compose.runtime.yaml
+      service: opencode-runtime
+    image: my-project:local
+    working_dir: /home/bun/project
+    volumes:
+      - type: bind
+        source: .
+        target: /home/bun/project
+      # Read-only shared configuration source.
+      - type: bind
+        source: /absolute/host/opencode-config
+        target: /opt/opencode-config-source
+        read_only: true
+      # Read-only shared skills.
+      - type: bind
+        source: /absolute/host/claude-skills
+        target: /opt/claude-skills
+        read_only: true
+    # Project-specific: networks, ports, depends_on, extra services.
+    ports:
+      - "4096:4096"
+
+# `extends` does not import top-level resources, so declare the named volumes
+# the fragment references.
+volumes:
+  opencode-config:
+  opencode-data:
+  opencode-cache:
+  opencode-cargo:
+```
+
+Set `OPENCODE_DOCKER_ROOT` to the directory of a clone of this repository. To
+change the home, set `OPENCODE_HOME` in the host environment or project `.env`
+before Compose interpolation, so all environment and volume targets agree.
+The fragment centralizes
+UID/GID handling, Git identity, proxy variables, the writable instance volumes,
+and the environment; `OPENCODE_IMAGE`, `OPENCODE_UID`, `OPENCODE_GID`,
+`OPENCODE_WORKING_DIR`, and `OPENCODE_PORT` are also read from the environment.
+
+The named volumes must be declared by the consuming Compose file. Keeping them
+per project isolates sessions; mounting a shared configuration directory
+read-only at `/opt/opencode-config-source` shares the source without sharing
+generated dependency installs.
+
+The entrypoint mirrors the read-only source into the instance config volume,
+drops root to `OPENCODE_UID:OPENCODE_GID`, and execs the requested command.
+Without a source it seeds the baked neutral defaults. `docker run <image>
+Rscript script.R` and similar extension commands therefore run normally.
+
+Shared skills live in [`config/skills/`](config/skills/) and are conventionally
+mounted read-only at `/opt/claude-skills`.
+
+## Focused Checks
+
+Run the daemon-free configuration-mirror and launcher checks with uv:
 
 ```bash
-docker compose exec opencode opencode
+uv run --no-project --with pytest pytest tests -q
+sh -n start.sh docker/entrypoint.sh
+docker compose config --quiet
 ```
+
+The publish workflow also verifies the built image's pinned tool versions,
+default and custom-UID write access, Rust compilation, and OpenCode configuration
+loading before pushing the exact tested image.

@@ -1,5 +1,10 @@
-# Copy to compose.override.yaml and replace the source paths with existing directories.
-# Relative source paths are resolved from this repository.
+# Copy to compose.override.yaml and replace the source paths with existing
+# directories. Compose discovers compose.override.yaml automatically when you
+# run `docker compose` (or ./start.sh) without an explicit -f.
+#
+# These mounts are merged into the chat `opencode` service by their container
+# target path. The workspace, read-only config source, and state come from
+# compose.yaml and compose.runtime.yaml.
 services:
   opencode:
     volumes:

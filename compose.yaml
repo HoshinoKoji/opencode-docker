@@ -1,45 +1,63 @@
+# Personal chat workspace. It extends the shared runtime service and adds only
+# the chat profile: host networking so a loopback host proxy stays reachable,
+# the chat agent/permission source, and the workspace mount.
+#
+#   ./start.sh            # start (pulls or uses the local image)
+#   ./start.sh --build    # also build the runtime from source (compose.build.yaml)
+#
+# The `extends` fragment does not import top-level resources, so the named
+# volumes it references are declared here.
 services:
   opencode:
-    build:
-      context: .
-      # On Linux this also reaches a host proxy listening on 127.0.0.1.
-      network: host
-      args:
-        - UV_VERSION=${UV_VERSION:-latest}
-        - OPENCODE_VERSION=${OPENCODE_VERSION:-latest}
-        - HTTP_PROXY
-        - HTTPS_PROXY
-        - ALL_PROXY
-        - NO_PROXY
+    extends:
+      file: ./compose.runtime.yaml
+      service: opencode-runtime
+    image: ${OPENCODE_IMAGE:-ghcr.io/hoshinokoji/opencode-runtime:0.1.0}
+    # Host networking lets the server bind a host address and reach a proxy on
+    # the host's loopback interface. Projects that do not need this use bridge.
     network_mode: host
-    stdin_open: true
-    tty: true
-    # Host networking lets the server bind the chosen host address and port.
+    environment:
+      OPENCODE_HOME: "${OPENCODE_HOME:-/home/bun}"
+      HOME: "${OPENCODE_HOME:-/home/bun}"
+      OPENCODE_PORT: "${OPENCODE_PORT:-14096}"
+      OPENCODE_PROFILE_INPUT: /opt/opencode-profile-source
+      OPENCODE_CONFIG: ${OPENCODE_HOME:-/home/bun}/.config/opencode/.runtime-profile/opencode.jsonc
     command:
+      - opencode
       - serve
       - --hostname
       - ${OPENCODE_BIND_ADDRESS:-0.0.0.0}
       - --port
-      - ${OPENCODE_PORT:-14096} # Escape the default port
-    environment:
-      - GIT_AUTHOR_NAME
-      - GIT_AUTHOR_EMAIL
-      - GIT_COMMITTER_NAME
-      - GIT_COMMITTER_EMAIL
-      - HTTP_PROXY
-      - HTTPS_PROXY
-      - ALL_PROXY
-      - NO_PROXY
-      - http_proxy
-      - https_proxy
-      - all_proxy
-      - no_proxy
-      - OPENCODE_SERVER_PASSWORD
-      - OPENCODE_SERVER_USERNAME
+      - ${OPENCODE_PORT:-14096}
     volumes:
-      - .:/home/bun/workspace
-      - ./config/opencode:/home/bun/.config/opencode
-      - opencode-data:/home/bun/.local/share/opencode
+      - type: bind
+        source: .
+        target: /home/bun/workspace
+      # Read-only shared configuration source; the entrypoint mirrors it into
+      # the writable opencode-config volume on every start.
+      - type: bind
+        source: ${OPENCODE_CONFIG_SOURCE:-./config/opencode}
+        target: /opt/opencode-config-source
+        read_only: true
+        bind:
+          create_host_path: false
+      # Chat-specific behavior overlays the same global preferences used by
+      # development instances; it is copied into the writable mirror as well.
+      - type: bind
+        source: ./config/chat
+        target: /opt/opencode-profile-source
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${OPENCODE_SKILLS_SOURCE:-./config/skills}
+        target: /opt/claude-skills
+        read_only: true
+        bind:
+          create_host_path: false
 
 volumes:
+  opencode-config:
   opencode-data:
+  opencode-cache:
+  opencode-cargo:

@@ -1,6 +1,18 @@
 # AGENTS.md
 
-This is a personal chat workspace tracked in Git. It contains OpenCode configuration, a Docker Compose setup for running OpenCode, and Markdown notes and temporary scripts. It has no application package manifest or project test/lint workflow; see `README.md` for container usage.
+This repository publishes a general-purpose OpenCode runtime image and runs a personal chat workspace on top of it. It contains the runtime `Dockerfile`, a Docker Compose setup, shared configuration, Markdown notes, and focused runtime checks under `tests/`; see `README.md` for container usage.
+
+## Environment
+
+- Tool versions are pinned in `versions.env`; it assigns defaults only, so explicit environment overrides win. It is the single source of truth for local builds (`./start.sh --build`) and the publish workflow.
+- `config/opencode/` holds the neutral development defaults baked into the runtime. `config/chat/` holds the `serious`/`casual`/`temp` chat agents and memory permissions, and is loaded only by the chat workspace. `config/skills/` holds skills shared by every project. Do not reintroduce chat-specific defaults into `config/opencode/`.
+- `compose.runtime.yaml` is a shared service fragment consumed with Compose `extends` (not `include`); `compose.yaml` is the chat workspace and `compose.build.yaml` builds the runtime locally. The fragment does not import top-level resources, so consuming files declare the `opencode-config`, `opencode-data`, `opencode-cache`, and `opencode-cargo` volumes and the read-only config/skills bind sources themselves.
+- A shared configuration source is mounted read-only at `/opt/opencode-config-source`. The entrypoint mirrors it into the writable instance `opencode-config` volume on every start, excluding generated dependencies, so source edits and deletions take effect on restart while the host source stays unmodified. Without a source it seeds the baked neutral defaults.
+- Chat settings overlay those shared preferences: `/opt/opencode-profile-source` is mirrored into the instance configuration, its agents are installed there, and its JSONC is loaded by native `OPENCODE_CONFIG` precedence before project configuration. Model/provider preferences remain shared.
+- The Rust toolchain under `/usr/local` is read-only; the entrypoint points `CARGO_HOME` at the per-instance `opencode-cargo` volume so the registry and installed binaries are writable without sharing the tool install.
+- The runtime image is published to `ghcr.io/hoshinokoji/opencode-runtime` for `linux/amd64` only, from manual runs or `runtime-v*` tags. No build uses an implicit `latest`.
+- The image entrypoint unifies `HOME`/XDG/`CARGO_HOME` around `OPENCODE_HOME`, owns the runtime-managed directories, drops root to `OPENCODE_UID`/`OPENCODE_GID` with `setpriv`, and execs the given command. Extension images and `Rscript` invocations are passed through unchanged.
+- Run focused checks with `uv run --no-project --with pytest pytest tests -q`; the manual/tag publish workflow also validates Compose and runs image smoke checks. Host credentials may be imported once from the read-only `/opt/opencode-auth-source` directory into writable instance state.
 
 This project defines three switchable custom primary agents: `serious` (the default, writes to shared memory), `casual` (writes to its own private memory), and `temp` (temporary chat, with no memory access or recording). Each agent prompt defines its conversational style; this file defines memory file formats and procedures.
 
