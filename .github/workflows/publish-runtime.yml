@@ -192,7 +192,9 @@ jobs:
       - name: Smoke test writes and Rust compilation (configured non-root UID)
         run: |
           set -eu
-          docker run --rm -e OPENCODE_UID=1500 -e OPENCODE_GID=1500 \
+          # A different HOME does not change the image's /home/bun/workspace
+          # WORKDIR. Use an accessible cwd when testing a different UID.
+          docker run --rm --workdir /tmp -e OPENCODE_UID=1500 -e OPENCODE_GID=1500 \
             -e OPENCODE_HOME=/tmp/opencode-1500 \
             -e HOME=/tmp/opencode-1500 \
             "${SMOKE_IMAGE}" sh -c '
@@ -207,14 +209,14 @@ jobs:
               rustc "$HOME/hello.rs" -o "$HOME/hello"
               "$HOME/hello" | grep -q rust-ok
             '
-          docker run --rm -e OPENCODE_UID=1500 -e OPENCODE_GID=1500 \
+          docker run --rm --workdir /tmp -e OPENCODE_UID=1500 -e OPENCODE_GID=1500 \
             -e OPENCODE_HOME=/tmp/opencode-1500 \
             "${SMOKE_IMAGE}" opencode debug config >/dev/null
 
       - name: Smoke test an already-unprivileged process
         run: |
           set -eu
-          docker run --rm --user 1500:1500 -e HOME=/tmp/direct-1500 \
+          docker run --rm --workdir /tmp --user 1500:1500 -e HOME=/tmp/direct-1500 \
             "${SMOKE_IMAGE}" sh -c 'test "$(id -u)" = 1500 && touch "$HOME/.config/opencode/write-test"'
 
       - name: Push the tested image
