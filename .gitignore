@@ -1,3 +1,5 @@
+.vscode/
+
 MEMORY.md
 .sessions/
 .env
