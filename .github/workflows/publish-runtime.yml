@@ -88,6 +88,7 @@ jobs:
           sh -n start.sh
           sh -n docker/entrypoint.sh
           sh -n docker/install-opencode.sh
+          sh -n docker/smoke-tools.sh
 
       - name: Set up uv for the focused launcher checks
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
@@ -137,16 +138,9 @@ jobs:
         run: |
           set -eu
           docker run --rm \
+            -v "$PWD/docker/smoke-tools.sh:/opt/smoke-tools.sh:ro" \
             -e BUN_VERSION -e NODE_VERSION -e UV_VERSION -e OPENCODE_VERSION -e RUST_VERSION \
-            "${SMOKE_IMAGE}" sh -c '
-            set -eu
-            test "$(opencode --version)" = "$OPENCODE_VERSION"
-            test "$(node --version)" = "v$NODE_VERSION"
-            test "$(bun --version)" = "$BUN_VERSION"
-            case "$(uv --version)" in "uv $UV_VERSION"*) ;; *) exit 1 ;; esac
-            case "$(cargo --version)" in "cargo $RUST_VERSION "*) ;; *) exit 1 ;; esac
-            case "$(rustc --version)" in "rustc $RUST_VERSION "*) ;; *) exit 1 ;; esac
-          '
+            "${SMOKE_IMAGE}" sh /opt/smoke-tools.sh
           result=$(docker run --rm "${SMOKE_IMAGE}" sh -c 'printf "%s-%s\n" "$1" "$2"' sh alpha beta)
           test "$result" = "alpha-beta"
 

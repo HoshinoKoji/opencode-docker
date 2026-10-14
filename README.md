@@ -419,10 +419,16 @@ with uv:
 
 ```bash
 uv run --no-project --with pytest pytest tests -q
-sh -n start.sh docker/entrypoint.sh docker/install-opencode.sh
+sh -n start.sh
+sh -n docker/entrypoint.sh
+sh -n docker/install-opencode.sh
+sh -n docker/smoke-tools.sh
 docker compose config --quiet
 ```
 
-The publish workflow also verifies the built image's pinned tool versions,
+The publish workflow runs [`docker/smoke-tools.sh`](docker/smoke-tools.sh) against
+the built image. It accepts V1's bare version and V2's `opencode v<version>`
+output while comparing the exact pinned version, and prints the expected and
+actual values on a mismatch. It also verifies
 default and custom-UID write access, Rust compilation, and OpenCode configuration
 loading before pushing the exact tested image.
