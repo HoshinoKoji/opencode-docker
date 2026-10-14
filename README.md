@@ -11,8 +11,8 @@ The runtime is designed for reuse by other projects: an extension image adds
 only its own toolchain, and a project Compose service extends the shared
 runtime fragment. See [Using the runtime in another project](#using-the-runtime-in-another-project).
 
-> **Bootstrap status:** the `ghcr.io/hoshinokoji/opencode-runtime` package has
-> not been published yet. Until the first `runtime-v*` release is pushed, build
+> **Release target:** this checkout defaults to runtime `0.2.0`, containing
+> OpenCode `2.0.28`. Until the `0.2.0` image is published, build
 > the runtime from this checkout with `./start.sh --build` and point other
 > projects at `ghcr.io/hoshinokoji/opencode-runtime:local` through
 > `OPENCODE_RUNTIME_IMAGE`.
@@ -62,7 +62,7 @@ Run the chat workspace from the repository directory:
 ./start.sh
 ```
 
-This pulls `ghcr.io/hoshinokoji/opencode-runtime` (default tag `0.1.0`) unless a
+This pulls `ghcr.io/hoshinokoji/opencode-runtime` (default tag `0.2.0`) unless a
 local image with that name exists. The container runs OpenCode Web in the
 background, listening on the host at `0.0.0.0:14096` by default. Open
 <http://127.0.0.1:14096> in a local browser. Configure a model provider in the
@@ -182,12 +182,15 @@ only. It runs exclusively on manual `workflow_dispatch` or on tags matching
 To publish a release, create and push a tag:
 
 ```bash
-git tag runtime-v0.1.0
-git push origin runtime-v0.1.0
+git tag -a runtime-v0.2.0 -m "Runtime 0.2.0"
+git push origin runtime-v0.2.0
 ```
 
-The image is built once with the version tag (`:0.1.0`), a commit-qualified tag
-(`:0.1.0-<sha>`), and OCI labels that record the source repository, revision,
+If the local tag already exists, push it without creating it again. Creating
+a local tag does not publish an image; pushing it triggers the workflow.
+
+The image is built once with the version tag (`:0.2.0`), a commit-qualified tag
+(`:0.2.0-<sha>`), and OCI labels that record the source repository, revision,
 and version. Before pushing that exact image, the workflow validates the Compose
 files and shell syntax, checks the tool versions, verifies `opencode debug
 config` resolves the neutral defaults with no chat agent, compiles and runs a

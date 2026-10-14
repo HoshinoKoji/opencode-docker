@@ -25,7 +25,7 @@
 # config volume on every start.
 services:
   opencode-runtime:
-    image: ${OPENCODE_IMAGE:-ghcr.io/hoshinokoji/opencode-runtime:0.1.0}
+    image: ${OPENCODE_IMAGE:-ghcr.io/hoshinokoji/opencode-runtime:0.2.0}
     working_dir: ${OPENCODE_WORKING_DIR:-/home/bun/workspace}
     stdin_open: true
     tty: true

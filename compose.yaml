@@ -12,7 +12,7 @@ services:
     extends:
       file: ./compose.runtime.yaml
       service: opencode-runtime
-    image: ${OPENCODE_IMAGE:-ghcr.io/hoshinokoji/opencode-runtime:0.1.0}
+    image: ${OPENCODE_IMAGE:-ghcr.io/hoshinokoji/opencode-runtime:0.2.0}
     # Host networking lets the server bind a host address and reach a proxy on
     # the host's loopback interface. Projects that do not need this use bridge.
     network_mode: host
