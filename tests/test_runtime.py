@@ -16,6 +16,21 @@ ENTRYPOINT = ROOT / "docker" / "entrypoint.sh"
 INSTALLER = ROOT / "docker" / "install-opencode.sh"
 
 
+def test_rust_permissions_are_prepared_before_copying_into_runtime():
+    instructions = [
+        line.strip() for line in (ROOT / "Dockerfile").read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    rust_start = instructions.index("FROM rust:${RUST_VERSION}-bookworm AS rust")
+    runtime_start = instructions.index("FROM ubuntu:24.04")
+    chmod = "RUN chmod -R a+rX,go-w /usr/local/rustup /usr/local/cargo"
+    assert chmod in instructions[rust_start + 1:runtime_start]
+    runtime = instructions[runtime_start + 1:]
+    for directory in ("/usr/local/rustup", "/usr/local/cargo"):
+        assert f"COPY --from=rust {directory} {directory}" in runtime
+        assert not any("chmod" in line and directory in line for line in runtime)
+
+
 @pytest.mark.parametrize("version", ["1.18.35", "2.0.28"])
 @pytest.mark.parametrize("architecture,target", [
     ("amd64", "linux-x64-baseline"),

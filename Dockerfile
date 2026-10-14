@@ -12,6 +12,10 @@ ARG RUST_VERSION
 FROM oven/bun:${BUN_VERSION} AS bun
 FROM rust:${RUST_VERSION}-bookworm AS rust
 
+# Prepare immutable tools before copying them into the runtime. Changing these
+# permissions in the final stage would add another layer containing Rust files.
+RUN chmod -R a+rX,go-w /usr/local/rustup /usr/local/cargo
+
 FROM ubuntu:24.04
 
 ARG TARGETARCH
@@ -84,9 +88,6 @@ RUN case "${TARGETARCH}" in \
 ENV RUSTUP_HOME=/usr/local/rustup
 COPY --from=rust /usr/local/rustup /usr/local/rustup
 COPY --from=rust /usr/local/cargo /usr/local/cargo
-# Official Rust images make these trees writable for arbitrary users. Keep the
-# installed tools immutable here; caches and cargo installs use instance HOME.
-RUN chmod -R a+rX,go-w /usr/local/rustup /usr/local/cargo
 
 # OpenCode CLI, pinned to the version in versions.env. V2 native binaries are
 # published as @opencode/cli-* npm tarballs; explicit V1 overrides still work.

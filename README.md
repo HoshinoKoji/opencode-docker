@@ -132,6 +132,10 @@ workflow; no build falls back to an implicit `latest`. The current pins are:
 | OpenCode | `2.0.28` |
 | Rust | `1.99.0` |
 
+Rust toolchain permissions are prepared in the Rust build stage before the
+files are copied into the final runtime. This keeps the tools read-only for
+runtime users without adding a second toolchain-sized permissions layer.
+
 OpenCode v2 is published as [`@opencode/cli`](https://www.npmjs.com/package/@opencode/cli)
 and its platform-specific native packages. The image downloads the exact pinned
 package, keeping the baseline x64 binary for CPUs without AVX2. The old GitHub
@@ -414,8 +418,8 @@ mounted read-only at `/opt/claude-skills`.
 
 ## Focused Checks
 
-Run the daemon-free native-installer, configuration-mirror, and launcher checks
-with uv:
+Run the daemon-free image-layout, native-installer, configuration-mirror, and
+launcher checks with uv:
 
 ```bash
 uv run --no-project --with pytest pytest tests -q
