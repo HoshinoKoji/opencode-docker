@@ -53,7 +53,9 @@ Memory rules are in [`AGENTS.md`](AGENTS.md).
 
 ## Running in a Container
 
-The host needs Git, Docker, and Docker Compose v2 (with `extends` support).
+The host needs Git, Docker, and modern Docker Compose (with `extends` support).
+Local source builds also require Buildx and Compose support for
+`build.entitlements` and `docker compose build --print`.
 Run the chat workspace from the repository directory:
 
 ```bash
@@ -64,7 +66,14 @@ This pulls `ghcr.io/hoshinokoji/opencode-runtime` (default tag `0.1.0`) unless a
 local image with that name exists. The container runs OpenCode Web in the
 background, listening on the host at `0.0.0.0:14096` by default. Open
 <http://127.0.0.1:14096> in a local browser. Configure a model provider in the
-interface on first use; credentials are not required to start the container.
+interface on first use; model-provider credentials are not required to start
+the container. The Compose default username and password are both `opencode`;
+set `OPENCODE_SERVER_PASSWORD` before starting to use a different password.
+This shared default is intended for trusted local use. Because the service
+listens on `0.0.0.0`, use a strong password for network access, or set
+`OPENCODE_BIND_ADDRESS=127.0.0.1` to restrict the chat workspace to the local host.
+Plain `docker run` without a password still uses OpenCode v2's generated password,
+printed as `server password ...`; it changes when the server restarts.
 
 Check the status, follow logs, or stop the service:
 
@@ -82,6 +91,28 @@ To build the runtime image locally from this checkout:
 ./start.sh --build
 ```
 
+The local build uses host networking to reach a proxy on the host's loopback
+address and explicitly grants the `network.host` build entitlement. This gives
+build steps access to the builder host's network; use it only with trusted build
+inputs. The launcher first exports the resolved build definition with
+`docker compose build --print`, then runs `docker buildx bake` with
+`--allow=network.host` and `--load`. Only after a successful build does it run
+Compose `up --no-build`. Version pins, proxy arguments, and local overrides are
+resolved by Compose rather than duplicated in the launcher.
+
+This bypasses an authorization forwarding issue confirmed in Compose v5.6.0:
+that release requests the entitlement in the Bake target but does not grant it
+on the Buildx command line. `COMPOSE_BAKE=false` has no effect in that release.
+Declaring `build.entitlements` alone therefore does not fix the reported
+`additional privileges requested: pass "--allow=network.host"` error.
+The `--allow` flag belongs to Buildx; do not pass it directly to `start.sh`.
+
+The launcher grants Bake read access only to this repository. Overrides that
+use a build context or Dockerfile outside it need a separately reviewed
+filesystem grant. If a custom BuildKit daemon rejects the host entitlement
+itself, that builder must also permit `network.host`; this is a separate error
+from Bake's missing client-side authorization.
+
 The build reads pinned tool versions from [`versions.env`](versions.env) and
 tags the local image `ghcr.io/hoshinokoji/opencode-runtime:local`. To test a
 development version, override a value in the environment:
@@ -98,15 +129,48 @@ workflow; no build falls back to an implicit `latest`. The current pins are:
 | Bun | `1.3.14` |
 | Node.js | `24.15.0` |
 | uv | `0.12.23` |
-| OpenCode | `1.18.35` |
+| OpenCode | `2.0.28` |
 | Rust | `1.99.0` |
+
+OpenCode v2 is published as [`@opencode/cli`](https://www.npmjs.com/package/@opencode/cli)
+and its platform-specific native packages. The image downloads the exact pinned
+package, keeping the baseline x64 binary for CPUs without AVX2. The old GitHub
+release feed still serves v1 and is not the v2 version source.
+
+When upgrading from v1, back up the persistent configuration and data volumes
+before rebuilding. V2 contains compatibility normalization for legacy config
+fields (including `autoupdate`, `skills.paths`, and `permission`), so this checkout
+keeps its existing chat profile. Custom plugins and providers should be checked
+against the [v2 documentation](https://opencode.ai/v2/docs); the image smoke tests
+do not validate every host configuration or existing session migration.
+
+To build the previous CLI version explicitly, the installer also supports v1:
+
+```bash
+OPENCODE_VERSION=1.18.35 ./start.sh --build
+```
+
+This changes the CLI binary only; restoring backed-up data is a separate step
+if the newer version has changed it.
 
 Build only, without starting the service:
 
 ```bash
 set -a; . ./versions.env; set +a
-docker compose -f compose.yaml -f compose.build.yaml build opencode
+export OPENCODE_IMAGE=${OPENCODE_IMAGE:-ghcr.io/hoshinokoji/opencode-runtime:local}
+(
+  set -eu
+  bake_file=$(mktemp)
+  trap 'rm -f "$bake_file"' EXIT
+  docker compose -f compose.yaml -f compose.build.yaml build --print opencode > "$bake_file"
+  docker buildx bake --file "$bake_file" --allow=network.host \
+    --allow="fs.read=$PWD" --load opencode
+)
 ```
+
+Run this build-only example from the repository root. Add
+`-f compose.override.yaml` to its Compose command when using local overrides;
+`start.sh --build` includes that file automatically.
 
 ### Publishing the Runtime
 
@@ -156,8 +220,8 @@ export OPENCODE_SERVER_PASSWORD='replace-with-your-password'
 ./start.sh
 ```
 
-Then open `http://<host-ip>:8090`. The default username is `opencode`; set
-`OPENCODE_SERVER_USERNAME` to change it. With host networking, OpenCode listens
+Then open `http://<host-ip>:8090`. The server username is `opencode`.
+With host networking, OpenCode listens
 directly on the host: `OPENCODE_BIND_ADDRESS` controls the listening interface
 and `OPENCODE_PORT` controls the port.
 
@@ -347,11 +411,12 @@ mounted read-only at `/opt/claude-skills`.
 
 ## Focused Checks
 
-Run the daemon-free configuration-mirror and launcher checks with uv:
+Run the daemon-free native-installer, configuration-mirror, and launcher checks
+with uv:
 
 ```bash
 uv run --no-project --with pytest pytest tests -q
-sh -n start.sh docker/entrypoint.sh
+sh -n start.sh docker/entrypoint.sh docker/install-opencode.sh
 docker compose config --quiet
 ```
 

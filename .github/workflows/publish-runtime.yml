@@ -87,6 +87,7 @@ jobs:
           set -eu
           sh -n start.sh
           sh -n docker/entrypoint.sh
+          sh -n docker/install-opencode.sh
 
       - name: Set up uv for the focused launcher checks
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0

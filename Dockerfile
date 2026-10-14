@@ -88,16 +88,11 @@ COPY --from=rust /usr/local/cargo /usr/local/cargo
 # installed tools immutable here; caches and cargo installs use instance HOME.
 RUN chmod -R a+rX,go-w /usr/local/rustup /usr/local/cargo
 
-# OpenCode CLI, pinned to the version in versions.env.
-RUN case "${TARGETARCH}" in \
-        amd64) opencode_target=linux-x64-baseline ;; \
-        arm64) opencode_target=linux-arm64 ;; \
-        *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
-    esac \
-    && curl --retry 5 --retry-delay 5 --retry-all-errors -fsSL \
-        "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-${opencode_target}.tar.gz" \
-        | tar -xz -C /usr/local/bin opencode \
-    && chmod 755 /usr/local/bin/opencode
+# OpenCode CLI, pinned to the version in versions.env. V2 native binaries are
+# published as @opencode/cli-* npm tarballs; explicit V1 overrides still work.
+COPY docker/install-opencode.sh /tmp/install-opencode.sh
+RUN sh /tmp/install-opencode.sh "${OPENCODE_VERSION}" "${TARGETARCH}" /usr/local/bin/opencode \
+    && rm /tmp/install-opencode.sh
 
 # Neutral development defaults, baked outside any HOME so they survive a
 # different mount layout. The entrypoint copies them into the active HOME only

@@ -8,6 +8,9 @@ services:
       context: .
       # Reaches a host proxy listening on 127.0.0.1 during the build.
       network: host
+      # Explicitly authorize BuildKit's host-network entitlement.
+      entitlements:
+        - network.host
       # Reaches a bridge-network host proxy published as host.docker.internal.
       extra_hosts:
         - "host.docker.internal:host-gateway"

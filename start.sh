@@ -58,17 +58,45 @@ export OPENCODE_CONFIG_SOURCE
 if [ "$build" = true ]; then
     OPENCODE_IMAGE=${OPENCODE_IMAGE:-ghcr.io/hoshinokoji/opencode-runtime:local}
     export OPENCODE_IMAGE
-    if [ -f "$workspace/compose.override.yaml" ]; then
-        exec docker compose --project-directory "$workspace" \
-            -f "$workspace/compose.yaml" \
-            -f "$workspace/compose.build.yaml" \
-            -f "$workspace/compose.override.yaml" \
-            up -d "$@"
-    fi
-    exec docker compose --project-directory "$workspace" \
-        -f "$workspace/compose.yaml" \
-        -f "$workspace/compose.build.yaml" \
-        up -d "$@"
+    compose_local() {
+        if [ -f "$workspace/compose.override.yaml" ]; then
+            docker compose --project-directory "$workspace" \
+                -f "$workspace/compose.yaml" \
+                -f "$workspace/compose.build.yaml" \
+                -f "$workspace/compose.override.yaml" "$@"
+        else
+            docker compose --project-directory "$workspace" \
+                -f "$workspace/compose.yaml" \
+                -f "$workspace/compose.build.yaml" "$@"
+        fi
+    }
+
+    # Compose 5.6.0 does not forward network.host as a Bake --allow grant.
+    # Let Compose resolve interpolation, extends, proxy args, and overrides;
+    # then run that exact definition with an explicit, narrowly scoped grant.
+    bake_file=$(mktemp)
+    trap 'rm -f "$bake_file"' EXIT
+    trap 'exit 1' HUP INT TERM
+    compose_local build --print opencode > "$bake_file"
+    docker buildx bake --file "$bake_file" \
+        --allow=network.host --allow="fs.read=$workspace" --load opencode
+    rm -f "$bake_file"
+    trap - EXIT HUP INT TERM
+
+    # The image is already built. Remove build switches without losing quoting
+    # or the order of the remaining Compose up options and service names.
+    remaining=$#
+    while [ "$remaining" -gt 0 ]; do
+        argument=$1
+        shift
+        case "$argument" in
+            --build|--build=true|--build=false|--no-build) ;;
+            *) set -- "$@" "$argument" ;;
+        esac
+        remaining=$((remaining - 1))
+    done
+    compose_local up -d --no-build "$@"
+    exit
 fi
 
 # No explicit files: Compose discovers compose.yaml and compose.override.yaml.
