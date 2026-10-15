@@ -46,7 +46,7 @@ This project defines three switchable custom primary agents: `serious` (the defa
 When recording:
 1. Create `YYYY-MM-DD-<topic>.md` in the current mode's memory space using the template below: begin with a concise summary, then add details that make it possible to resume the discussion later.
 2. Prepend a new entry to `INDEX.md` in the same space.
-3. Merge only newly learned, enduring preferences or facts into that space's `MEMORY.md`. Deduplicate; do not turn it into a chronological log. Leave it untouched if there is nothing enduring to add. Exclude passwords, tokens, and other sensitive details that do not need to be retained.
+3. Merge only newly learned, enduring preferences or facts into that space's `MEMORY.md`. Organize `MEMORY.md` by coherent topics and rewrite existing bullets in place when state evolves; deduplicate and do not append dated fragments or turn it into a chronological log. Leave it untouched if there is nothing enduring to add. Exclude passwords, tokens, and other sensitive details that do not need to be retained.
 
 ### Conversation record template
 ```
@@ -68,6 +68,7 @@ When recording:
 
 ### Principles
 - Keep the summary brief. Include enough concrete detail in the longer record for future retrieval and continuation: the user's original question or key wording, relevant background, important clarifications and changes, actions taken, reasoning and tradeoffs, output locations, and open questions. Record only what happened and is useful; omit empty template fields.
+- Write memory files in natural, direct prose with high readability. State what the user shared, thought, or decided without tacking on defensive disclaimers, clinical/legalistic caveats, or lists of things the user did not mention or prove (such as “do not infer X from this,” “not a clinical diagnosis,” or “specific budget/details were not provided”). Keep operational rules in prompt files rather than repeating self-instructions inside memory entries.
 - Follow the user's specific instructions about the scope, format, and level of detail. Otherwise, choose the detail level based on the topic's complexity and future retrieval value. A simple chat can have a short record; complex tasks need the important steps and decisions. Do not transcribe the entire exchange by default; include more of the user's wording or process when requested.
 - When using memory to produce new work, integrate relevant context naturally instead of mechanically listing old entries, filenames, or phrases such as “according to past records.” Cite a specific record when the user asks for provenance or it helps verify a claim. Distinguish past statements from facts verified now, and prioritize the user's current instructions.
 - When recording for the first time, create the appropriate directory, index, and long-term memory file as needed. If the directory is empty, simply say that there are no past sessions yet.
