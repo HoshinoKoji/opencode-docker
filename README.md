@@ -11,11 +11,10 @@ The runtime is designed for reuse by other projects: an extension image adds
 only its own toolchain, and a project Compose service extends the shared
 runtime fragment. See [Using the runtime in another project](#using-the-runtime-in-another-project).
 
-> **Release target:** this checkout defaults to runtime `0.2.0`, containing
-> OpenCode `2.0.28`. Until the `0.2.0` image is published, build
-> the runtime from this checkout with `./start.sh --build` and point other
-> projects at `ghcr.io/hoshinokoji/opencode-runtime:local` through
-> `OPENCODE_RUNTIME_IMAGE`.
+> **Published image default:** Compose pulls runtime `0.2.0`, containing
+> OpenCode `2.0.28`. Source builds use the current pins listed below; point
+> other projects at `ghcr.io/hoshinokoji/opencode-runtime:local` through
+> `OPENCODE_RUNTIME_IMAGE` when testing them before the next runtime release.
 
 ## Chat Agents
 
@@ -128,8 +127,8 @@ workflow; no build falls back to an implicit `latest`. The current pins are:
 | --- | --- |
 | Bun | `1.3.14` |
 | Node.js | `24.15.0` |
-| uv | `0.12.23` |
-| OpenCode | `2.0.28` |
+| uv | `0.13.5` |
+| OpenCode | `2.1.4` |
 | Rust | `1.99.0` |
 
 Rust toolchain permissions are prepared in the Rust build stage before the

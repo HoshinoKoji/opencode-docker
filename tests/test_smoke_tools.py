@@ -11,16 +11,16 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SMOKE = ROOT / "docker/smoke-tools.sh"
 OUTPUTS = {
-    "opencode": "opencode v2.0.28",
+    "opencode": "opencode v2.1.4",
     "node": "v24.15.0",
     "bun": "1.3.14",
-    "uv": "uv 0.12.23 (x86_64-unknown-linux-gnu)",
+    "uv": "uv 0.13.5 (x86_64-unknown-linux-gnu)",
     "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
     "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
 }
 
 
-def run_smoke(tmp_path, overrides=None, failure=None, version="2.0.28"):
+def run_smoke(tmp_path, overrides=None, failure=None, version="2.1.4"):
     tools = tmp_path / "bin"
     tools.mkdir()
     for name, output in (OUTPUTS | (overrides or {})).items():
@@ -37,14 +37,14 @@ def run_smoke(tmp_path, overrides=None, failure=None, version="2.0.28"):
         OPENCODE_VERSION=version,
         NODE_VERSION="24.15.0",
         BUN_VERSION="1.3.14",
-        UV_VERSION="0.12.23",
+        UV_VERSION="0.13.5",
         RUST_VERSION="1.99.0",
     )
     return subprocess.run(["sh", str(SMOKE)], env=env, text=True, capture_output=True)
 
 
 @pytest.mark.parametrize("version,output", [
-    ("2.0.28", "opencode v2.0.28"),
+    ("2.1.4", "opencode v2.1.4"),
     ("1.18.35", "1.18.35"),
 ])
 def test_smoke_accepts_v1_and_v2_version_output(tmp_path, version, output):
@@ -63,9 +63,9 @@ def test_smoke_reports_version_mismatch(tmp_path, tool):
 
 
 @pytest.mark.parametrize("tool,output", [
-    ("opencode", "opencode v2.0.280"),
-    ("opencode", "opencode v2.0.28 extra"),
-    ("uv", "uv 0.12.230"),
+    ("opencode", "opencode v2.1.40"),
+    ("opencode", "opencode v2.1.4 extra"),
+    ("uv", "uv 0.13.50"),
     ("cargo", "cargo 1.99.00"),
     ("rustc", "rustc 1.99.00"),
 ])
