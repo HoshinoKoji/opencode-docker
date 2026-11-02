@@ -128,7 +128,7 @@ workflow; no build falls back to an implicit `latest`. The current pins are:
 | Bun | `1.3.14` |
 | Node.js | `24.15.0` |
 | uv | `0.13.5` |
-| OpenCode | `2.1.4` |
+| OpenCode | `2.2.5` |
 | Rust | `1.99.0` |
 
 Rust toolchain permissions are prepared in the Rust build stage before the

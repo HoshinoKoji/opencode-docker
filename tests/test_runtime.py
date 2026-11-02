@@ -31,7 +31,7 @@ def test_rust_permissions_are_prepared_before_copying_into_runtime():
         assert not any("chmod" in line and directory in line for line in runtime)
 
 
-@pytest.mark.parametrize("version", ["1.18.35", "2.1.4"])
+@pytest.mark.parametrize("version", ["1.18.35", "2.2.5"])
 @pytest.mark.parametrize("architecture,target", [
     ("amd64", "linux-x64-baseline"),
     ("arm64", "linux-arm64"),
@@ -97,7 +97,7 @@ def test_opencode_installer_uses_pinned_native_packages(tmp_path, version, archi
         assert subprocess.check_output([str(destination)], text=True).strip() == version
 
 
-@pytest.mark.parametrize("version,architecture", [("3.0.0", "amd64"), ("2.1.4", "s390x")])
+@pytest.mark.parametrize("version,architecture", [("3.0.0", "amd64"), ("2.2.5", "s390x")])
 def test_opencode_installer_rejects_unsupported_targets(tmp_path, version, architecture):
     destination = tmp_path / "opencode"
     result = subprocess.run(
@@ -312,7 +312,7 @@ def test_launcher_keeps_overrides_versions_and_paths_with_spaces(
         assert not bake_log.exists()
     assert not list(temporary.iterdir())
     assert versions_log.read_text().splitlines() == [
-        "9.8.7", opencode_override or "2.1.4", str(workspace / "config" / "opencode")
+        "9.8.7", opencode_override or "2.2.5", str(workspace / "config" / "opencode")
     ]
 
 
