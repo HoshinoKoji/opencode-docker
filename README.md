@@ -11,8 +11,8 @@ The runtime is designed for reuse by other projects: an extension image adds
 only its own toolchain, and a project Compose service extends the shared
 runtime fragment. See [Using the runtime in another project](#using-the-runtime-in-another-project).
 
-> **Published image default:** Compose pulls runtime `0.2.0`, containing
-> OpenCode `2.0.28`. Source builds use the current pins listed below; point
+> **Published image default:** Compose pulls runtime `0.2.4`, containing
+> OpenCode `2.2.5`. Source builds use the current pins listed below; point
 > other projects at `ghcr.io/hoshinokoji/opencode-runtime:local` through
 > `OPENCODE_RUNTIME_IMAGE` when testing them before the next runtime release.
 
@@ -61,7 +61,7 @@ Run the chat workspace from the repository directory:
 ./start.sh
 ```
 
-This pulls `ghcr.io/hoshinokoji/opencode-runtime` (default tag `0.2.0`) unless a
+This pulls `ghcr.io/hoshinokoji/opencode-runtime` (default tag `0.2.4`) unless a
 local image with that name exists. The container runs OpenCode Web in the
 background, listening on the host at `0.0.0.0:14096` by default. Open
 <http://127.0.0.1:14096> in a local browser. Configure a model provider in the
