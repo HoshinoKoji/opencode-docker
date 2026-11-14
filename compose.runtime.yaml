@@ -16,7 +16,6 @@
 #     opencode-config:
 #     opencode-data:
 #     opencode-cache:
-#     opencode-cargo:
 #
 # The host configuration and skills sources are deliberately declared by the
 # consuming service, because relative bind sources in an extended file are
@@ -45,7 +44,6 @@ services:
       XDG_CONFIG_HOME: "${OPENCODE_HOME:-/home/bun}/.config"
       XDG_DATA_HOME: "${OPENCODE_HOME:-/home/bun}/.local/share"
       XDG_CACHE_HOME: "${OPENCODE_HOME:-/home/bun}/.cache"
-      CARGO_HOME: "${OPENCODE_HOME:-/home/bun}/.cargo"
       OPENCODE_PORT: "${OPENCODE_PORT:-4096}"
       GIT_AUTHOR_NAME: "${GIT_AUTHOR_NAME:-}"
       GIT_AUTHOR_EMAIL: "${GIT_AUTHOR_EMAIL:-}"
@@ -79,8 +77,3 @@ services:
       - type: volume
         source: opencode-cache
         target: ${OPENCODE_HOME:-/home/bun}/.cache
-      # Per-instance Cargo home: registry and installed binaries stay writable
-      # while the toolchain under /usr/local remains read-only.
-      - type: volume
-        source: opencode-cargo
-        target: ${OPENCODE_HOME:-/home/bun}/.cargo

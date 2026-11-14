@@ -36,7 +36,7 @@ services:
       # Read-only shared configuration source; the entrypoint mirrors it into
       # the writable opencode-config volume on every start.
       - type: bind
-        source: ${OPENCODE_CONFIG_SOURCE:-./config/opencode}
+        source: ${OPENCODE_CONFIG_SOURCE:-${OPENCODE_DEFAULT_CONFIG_SOURCE:-./config/opencode}}
         target: /opt/opencode-config-source
         read_only: true
         bind:
@@ -60,4 +60,3 @@ volumes:
   opencode-config:
   opencode-data:
   opencode-cache:
-  opencode-cargo:

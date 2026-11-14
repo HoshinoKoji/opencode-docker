@@ -3,10 +3,8 @@
 set -eu
 
 : "${OPENCODE_VERSION:?load versions.env}"
-: "${NODE_VERSION:?load versions.env}"
 : "${BUN_VERSION:?load versions.env}"
 : "${UV_VERSION:?load versions.env}"
-: "${RUST_VERSION:?load versions.env}"
 
 check_exact() {
     if [ "$2" != "$3" ]; then
@@ -31,13 +29,7 @@ check_with_metadata() {
 opencode_version=$(opencode --version)
 printf 'OpenCode --version: %s\n' "$opencode_version"
 check_exact OpenCode "${opencode_version#opencode v}" "$OPENCODE_VERSION"
-node_version=$(node --version)
-check_exact Node "$node_version" "v$NODE_VERSION"
 bun_version=$(bun --version)
 check_exact Bun "$bun_version" "$BUN_VERSION"
 uv_version=$(uv --version)
 check_with_metadata uv "$uv_version" "uv $UV_VERSION"
-cargo_version=$(cargo --version)
-check_with_metadata Cargo "$cargo_version" "cargo $RUST_VERSION"
-rust_version=$(rustc --version)
-check_with_metadata Rust "$rust_version" "rustc $RUST_VERSION"

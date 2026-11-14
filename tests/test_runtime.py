@@ -1,112 +1,16 @@
 """Focused checks for installation, config mirroring, and launching; no daemon needed."""
 
-import io
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
-import tarfile
 
 import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRYPOINT = ROOT / "docker" / "entrypoint.sh"
-INSTALLER = ROOT / "docker" / "install-opencode.sh"
-
-
-def test_rust_permissions_are_prepared_before_copying_into_runtime():
-    instructions = [
-        line.strip() for line in (ROOT / "Dockerfile").read_text().splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-    rust_start = instructions.index("FROM rust:${RUST_VERSION}-bookworm AS rust")
-    runtime_start = instructions.index("FROM ubuntu:24.04")
-    chmod = "RUN chmod -R a+rX,go-w /usr/local/rustup /usr/local/cargo"
-    assert chmod in instructions[rust_start + 1:runtime_start]
-    runtime = instructions[runtime_start + 1:]
-    for directory in ("/usr/local/rustup", "/usr/local/cargo"):
-        assert f"COPY --from=rust {directory} {directory}" in runtime
-        assert not any("chmod" in line and directory in line for line in runtime)
-
-
-@pytest.mark.parametrize("version", ["1.18.35", "2.2.5"])
-@pytest.mark.parametrize("architecture,target", [
-    ("amd64", "linux-x64-baseline"),
-    ("arm64", "linux-arm64"),
-])
-@pytest.mark.parametrize("failure", [None, "download", "archive"])
-def test_opencode_installer_uses_pinned_native_packages(tmp_path, version, architecture, target, failure):
-    archive = tmp_path / "source.tgz"
-    member = "opencode" if version.startswith("1.") else "package/bin/opencode"
-    binary = f"#!/bin/sh\nprintf '%s\\n' '{version}'\n".encode()
-    with tarfile.open(archive, "w:gz") as contents:
-        entry = tarfile.TarInfo(member)
-        entry.size = len(binary)
-        entry.mode = 0o755
-        contents.addfile(entry, io.BytesIO(binary))
-
-    tools = tmp_path / "bin"
-    tools.mkdir()
-    curl = tools / "curl"
-    curl.write_text(
-        '#!/bin/sh\n'
-        'printf "%s\\n" "$@" > "$CURL_LOG"\n'
-        'if [ "$FAILURE" = download ]; then exit 22; fi\n'
-        'while [ "$#" -gt 0 ]; do\n'
-        '  if [ "$1" = -o ]; then\n'
-        '    if [ "$FAILURE" = archive ]; then printf broken > "$2";\n'
-        '    else cp "$SOURCE_ARCHIVE" "$2"; fi\n'
-        '    exit 0\n'
-        '  fi\n'
-        '  shift\n'
-        'done\n'
-        'exit 1\n'
-    )
-    curl.chmod(0o755)
-    temporary = tmp_path / "temporary"
-    temporary.mkdir()
-    destination = tmp_path / "opencode"
-    destination.write_text("previous binary")
-    env = os.environ.copy()
-    env.update(
-        PATH=f"{tools}:{env['PATH']}",
-        CURL_LOG=str(tmp_path / "curl-log"),
-        SOURCE_ARCHIVE=str(archive),
-        TMPDIR=str(temporary),
-        FAILURE=failure or "",
-    )
-    result = subprocess.run(
-        ["sh", str(INSTALLER), version, architecture, str(destination)],
-        env=env, text=True, capture_output=True,
-    )
-    if version.startswith("1."):
-        expected_url = f"https://github.com/anomalyco/opencode/releases/download/v{version}/opencode-{target}.tar.gz"
-    else:
-        expected_url = f"https://registry.npmjs.org/@opencode/cli-{target}/-/cli-{target}-{version}.tgz"
-    assert expected_url in (tmp_path / "curl-log").read_text().splitlines()
-    assert not list(temporary.iterdir())
-    if failure:
-        assert result.returncode != 0
-        assert destination.read_text() == "previous binary"
-    else:
-        assert result.returncode == 0, result.stderr
-        assert destination.read_bytes() == binary
-        assert destination.stat().st_mode & 0o777 == 0o755
-        assert subprocess.check_output([str(destination)], text=True).strip() == version
-
-
-@pytest.mark.parametrize("version,architecture", [("3.0.0", "amd64"), ("2.2.5", "s390x")])
-def test_opencode_installer_rejects_unsupported_targets(tmp_path, version, architecture):
-    destination = tmp_path / "opencode"
-    result = subprocess.run(
-        ["sh", str(INSTALLER), version, architecture, str(destination)],
-        text=True, capture_output=True,
-    )
-    assert result.returncode != 0
-    assert "unsupported" in result.stderr
-    assert not destination.exists()
 
 
 def run_entrypoint(home, source, *command, auth_source=None, profile_source=None):
@@ -233,7 +137,11 @@ def launcher_workspace(tmp_path):
         'set -eu\n'
         'printf "%s\\000" "$@" >> "$ARGS_LOG"\n'
         'printf "\\000" >> "$ARGS_LOG"\n'
-        'printf "%s\\n" "$BUN_VERSION" "$OPENCODE_VERSION" "$OPENCODE_CONFIG_SOURCE" > "$VERSIONS_LOG"\n'
+        'printf "%s\\n" "$BUN_VERSION" "$OPENCODE_VERSION" "$OPENCODE_DEFAULT_CONFIG_SOURCE" > "$VERSIONS_LOG"\n'
+        'for key in OPENCODE_PORT OPENCODE_BIND_ADDRESS OPENCODE_IMAGE OPENCODE_CONFIG_SOURCE OPENCODE_SKILLS_SOURCE OPENCODE_HTTP_PROXY OPENCODE_HTTPS_PROXY HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy; do\n'
+        '  printf "%s=" "$key"\n'
+        '  printenv "$key" || printf "<unset>\\n"\n'
+        'done > "$VERSIONS_LOG.env"\n'
         'if [ "$1" = compose ]; then\n'
         '  for argument in "$@"; do\n'
         '    if [ "$argument" = --print ]; then\n'
@@ -272,7 +180,7 @@ def launcher_calls(args_log):
 
 
 @pytest.mark.parametrize("build", [False, True])
-@pytest.mark.parametrize("opencode_override", [None, "1.18.35"])
+@pytest.mark.parametrize("opencode_override", [None, "2.0.0"])
 @pytest.mark.parametrize("with_override", [False, True])
 def test_launcher_keeps_overrides_versions_and_paths_with_spaces(
     launcher_workspace, tmp_path, build, opencode_override, with_override,
@@ -334,9 +242,110 @@ def test_launcher_does_not_start_after_a_failed_build(launcher_workspace, tmp_pa
 def test_launcher_build_consumes_switch_and_keeps_up_arguments(launcher_workspace, tmp_path):
     workspace, env, args_log, _, _, _ = launcher_workspace
     subprocess.run(
-        ["sh", str(workspace / "start.sh"), "--wait", "--build=true", "--timeout", "60", "opencode"],
+        ["sh", str(workspace / "start.sh"), "--build=true", "--", "--wait", "--timeout", "60", "opencode"],
         cwd=tmp_path, env=env, check=True,
     )
     calls = launcher_calls(args_log)
     assert calls[-1][-7:] == ["up", "-d", "--no-build", "--wait", "--timeout", "60", "opencode"]
     assert "--build=true" not in calls[-1]
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--port"], ["--port="], ["--port", "--build"], ["--port", "0"],
+    ["--port", "65536"], ["--port", "abc"], ["--port", "999999999999999999999"],
+    ["--image="], ["--config-source="], ["--prot", "8090"], ["--wait"],
+])
+def test_launcher_rejects_invalid_flags_before_side_effects(launcher_workspace, arguments):
+    workspace, env, args_log, _, _, _ = launcher_workspace
+    result = subprocess.run(
+        ["sh", str(workspace / "start.sh"), *arguments],
+        env=env, text=True, capture_output=True,
+    )
+    assert result.returncode == 2
+    assert "--help" in result.stderr
+    assert not args_log.exists()
+    assert not (workspace / "projects").exists()
+
+
+def test_launcher_help_needs_no_tools_or_versions(launcher_workspace):
+    workspace, env, args_log, _, _, _ = launcher_workspace
+    (workspace / "versions.env").write_text("exit 99\n")
+    result = subprocess.run(
+        ["sh", str(workspace / "start.sh"), "--help"],
+        env=env, text=True, capture_output=True,
+    )
+    assert result.returncode == 0
+    assert "--disable-proxy" in result.stdout
+    assert "COMPOSE_UP_ARGUMENTS" in result.stdout
+    assert not args_log.exists()
+    assert not (workspace / "projects").exists()
+
+
+@pytest.mark.parametrize("build", [False, True])
+def test_launcher_flags_override_environment_and_keep_quoted_values(launcher_workspace, build):
+    workspace, env, args_log, versions_log, _, _ = launcher_workspace
+    env.update(OPENCODE_PORT="1000", OPENCODE_IMAGE="old:image", OPENCODE_HTTP_PROXY="old")
+    flags = [
+        "--port=8090", "--port", "8091", "--bind", "127.0.0.1",
+        "--image=new:image", "--config-source", "config with spaces",
+        "--skills-source=skills with spaces", "--proxy", "http://proxy:7890",
+        "--https-proxy=https://secure:7891", "--no-proxy=localhost,127.0.0.1",
+    ]
+    if build:
+        flags.append("--build")
+    subprocess.run(
+        ["sh", str(workspace / "start.sh"), *flags, "--", "--timeout", "60", "service name"],
+        env=env, check=True,
+    )
+    settings = dict(line.split("=", 1) for line in Path(f"{versions_log}.env").read_text().splitlines())
+    assert settings["OPENCODE_PORT"] == "8091"
+    assert settings["OPENCODE_BIND_ADDRESS"] == "127.0.0.1"
+    assert settings["OPENCODE_IMAGE"] == "new:image"
+    assert settings["OPENCODE_CONFIG_SOURCE"] == "config with spaces"
+    assert settings["OPENCODE_SKILLS_SOURCE"] == "skills with spaces"
+    assert settings["OPENCODE_HTTP_PROXY"] == "http://proxy:7890"
+    assert settings["OPENCODE_HTTPS_PROXY"] == "https://secure:7891"
+    assert settings["NO_PROXY"] == "localhost,127.0.0.1"
+    assert launcher_calls(args_log)[-1][-3:] == ["--timeout", "60", "service name"]
+
+
+@pytest.mark.parametrize("enable_again", [False, True])
+def test_launcher_disable_proxy_clears_every_fallback(launcher_workspace, enable_again):
+    workspace, env, _, versions_log, _, _ = launcher_workspace
+    keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+            "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+            "OPENCODE_HTTP_PROXY", "OPENCODE_HTTPS_PROXY"]
+    env.update({key: "inherited-proxy" for key in keys})
+    flags = ["--proxy=first", "--disable-proxy"]
+    if enable_again:
+        flags += ["--http-proxy=last"]
+    subprocess.run(["sh", str(workspace / "start.sh"), *flags], env=env, check=True)
+    settings = dict(line.split("=", 1) for line in Path(f"{versions_log}.env").read_text().splitlines())
+    for key in keys:
+        assert settings[key] == ("last" if enable_again and key == "OPENCODE_HTTP_PROXY" else "")
+
+
+def test_launcher_defaults_leave_dotenv_overrides_to_compose(launcher_workspace):
+    workspace, env, args_log, versions_log, _, _ = launcher_workspace
+    host_config = Path(env["HOME"]) / ".config/opencode"
+    host_config.mkdir(parents=True)
+    subprocess.run(
+        ["sh", str(workspace / "start.sh"), "--build", "--no-build"], env=env, check=True,
+    )
+    settings = dict(line.split("=", 1) for line in Path(f"{versions_log}.env").read_text().splitlines())
+    assert settings["OPENCODE_CONFIG_SOURCE"] == "<unset>"
+    assert settings["OPENCODE_IMAGE"] == "<unset>"
+    assert versions_log.read_text().splitlines()[-1] == str(host_config)
+    assert len(launcher_calls(args_log)) == 1
+
+
+def test_launcher_accepts_explicit_empty_proxy_values(launcher_workspace):
+    workspace, env, _, versions_log, _, _ = launcher_workspace
+    env.update(OPENCODE_HTTP_PROXY="inherited", NO_PROXY="inherited")
+    subprocess.run(
+        ["sh", str(workspace / "start.sh"), "--http-proxy=", "--no-proxy", ""],
+        env=env, check=True,
+    )
+    settings = dict(line.split("=", 1) for line in Path(f"{versions_log}.env").read_text().splitlines())
+    assert settings["OPENCODE_HTTP_PROXY"] == ""
+    assert settings["NO_PROXY"] == ""

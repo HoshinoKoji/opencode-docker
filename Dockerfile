@@ -1,26 +1,23 @@
 # syntax=docker/dockerfile:1
+# check=skip=InvalidDefaultArgInFrom
 
 # General-purpose OpenCode runtime. Tool versions come from versions.env, which
 # is the single source of truth shared with the publish workflow. Plain
 # `docker build` accepts the same names as --build-arg; start.sh exports them.
+# FROM versions deliberately require build args rather than duplicated defaults.
+# Skip only the check that assumes a build without args must be valid; Compose
+# requires the versions and a missing tag still fails actual image resolution.
 
 # Global build args must be declared before the first FROM to be usable in
 # FROM lines.
 ARG BUN_VERSION
-ARG RUST_VERSION
+ARG UV_VERSION
 
 FROM oven/bun:${BUN_VERSION} AS bun
-FROM rust:${RUST_VERSION}-bookworm AS rust
-
-# Prepare immutable tools before copying them into the runtime. Changing these
-# permissions in the final stage would add another layer containing Rust files.
-RUN chmod -R a+rX,go-w /usr/local/rustup /usr/local/cargo
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 
 FROM ubuntu:24.04
 
-ARG TARGETARCH
-ARG NODE_VERSION
-ARG UV_VERSION
 ARG OPENCODE_VERSION
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -50,50 +47,20 @@ RUN apt-get update \
         iputils-ping \
         net-tools \
         telnet \
-        build-essential \
-        pkg-config \
     && rm -rf /var/lib/apt/lists/*
-
-# Node.js, pinned to the version in versions.env.
-RUN case "${TARGETARCH}" in \
-        amd64) node_arch=x64 ;; \
-        arm64) node_arch=arm64 ;; \
-        *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
-    esac \
-    && curl --retry 5 --retry-delay 5 --retry-all-errors -fsSL \
-        "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
-        | tar -xJ --strip-components=1 -C /usr/local
 
 # Bun from the pinned official image.
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 RUN ln -sf /usr/local/bin/bun /usr/local/bin/bunx
 
-# uv, pinned to the version in versions.env.
-RUN case "${TARGETARCH}" in \
-        amd64) uv_arch=x86_64 ;; \
-        arm64) uv_arch=aarch64 ;; \
-        *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
-    esac \
-    && curl --retry 5 --retry-delay 5 --retry-all-errors -fsSL \
-        "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${uv_arch}-unknown-linux-gnu.tar.gz" \
-        | tar -xz -C /tmp \
-    && install -m 0755 "/tmp/uv-${uv_arch}-unknown-linux-gnu/uv" /usr/local/bin/uv \
-    && install -m 0755 "/tmp/uv-${uv_arch}-unknown-linux-gnu/uvx" /usr/local/bin/uvx \
-    && rm -rf "/tmp/uv-${uv_arch}-unknown-linux-gnu"
+# uv and uvx from the pinned official image.
+COPY --from=uv /uv /uvx /usr/local/bin/
 
-# Rust toolchain. rustup and the toolchains stay read-only under /usr/local and
-# are executable by every user. CARGO_HOME is intentionally not set here: the
-# entrypoint points it at a writable per-instance directory so the cargo
-# registry/install cache is never shared with the immutable tool install.
-ENV RUSTUP_HOME=/usr/local/rustup
-COPY --from=rust /usr/local/rustup /usr/local/rustup
-COPY --from=rust /usr/local/cargo /usr/local/cargo
-
-# OpenCode CLI, pinned to the version in versions.env. V2 native binaries are
-# published as @opencode/cli-* npm tarballs; explicit V1 overrides still work.
-COPY docker/install-opencode.sh /tmp/install-opencode.sh
-RUN sh /tmp/install-opencode.sh "${OPENCODE_VERSION}" "${TARGETARCH}" /usr/local/bin/opencode \
-    && rm /tmp/install-opencode.sh
+# Install outside HOME so the CLI is available to every runtime UID. Keep
+# BUN_INSTALL build-local: runtime installs should use the writable user HOME.
+RUN BUN_INSTALL=/usr/local bun install -g --trust "@opencode/cli@${OPENCODE_VERSION}" \
+    && chmod -R a+rX /usr/local/install \
+    && rm -rf /root/.bun
 
 # Neutral development defaults, baked outside any HOME so they survive a
 # different mount layout. The entrypoint copies them into the active HOME only
@@ -117,12 +84,10 @@ RUN userdel -r ubuntu 2>/dev/null || true \
         /home/bun/.bun \
     && chown -R bun:bun /home/bun
 
-# Keep /usr/local/cargo/bin on PATH for the rustup proxies even though
-# CARGO_HOME points at the instance directory at runtime.
 ENV HOME=/home/bun \
     OPENCODE_UID=1000 \
     OPENCODE_GID=1000 \
-    PATH=/usr/local/cargo/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+    PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 
 WORKDIR /home/bun/workspace
 

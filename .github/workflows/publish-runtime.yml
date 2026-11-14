@@ -39,10 +39,8 @@ jobs:
           set +a
           {
             echo "BUN_VERSION=$BUN_VERSION"
-            echo "NODE_VERSION=$NODE_VERSION"
             echo "UV_VERSION=$UV_VERSION"
             echo "OPENCODE_VERSION=$OPENCODE_VERSION"
-            echo "RUST_VERSION=$RUST_VERSION"
           } >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
@@ -87,7 +85,6 @@ jobs:
           set -eu
           sh -n start.sh
           sh -n docker/entrypoint.sh
-          sh -n docker/install-opencode.sh
           sh -n docker/smoke-tools.sh
 
       - name: Set up uv for the focused launcher checks
@@ -121,16 +118,12 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ steps.version.outputs.tag }}
             io.hoshinokoji.runtime.bun=${{ env.BUN_VERSION }}
-            io.hoshinokoji.runtime.node=${{ env.NODE_VERSION }}
             io.hoshinokoji.runtime.uv=${{ env.UV_VERSION }}
             io.hoshinokoji.runtime.opencode=${{ env.OPENCODE_VERSION }}
-            io.hoshinokoji.runtime.rust=${{ env.RUST_VERSION }}
           build-args: |
             BUN_VERSION=${{ env.BUN_VERSION }}
-            NODE_VERSION=${{ env.NODE_VERSION }}
             UV_VERSION=${{ env.UV_VERSION }}
             OPENCODE_VERSION=${{ env.OPENCODE_VERSION }}
-            RUST_VERSION=${{ env.RUST_VERSION }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -139,7 +132,7 @@ jobs:
           set -eu
           docker run --rm \
             -v "$PWD/docker/smoke-tools.sh:/opt/smoke-tools.sh:ro" \
-            -e BUN_VERSION -e NODE_VERSION -e UV_VERSION -e OPENCODE_VERSION -e RUST_VERSION \
+            -e BUN_VERSION -e UV_VERSION -e OPENCODE_VERSION \
             "${SMOKE_IMAGE}" sh /opt/smoke-tools.sh
           result=$(docker run --rm "${SMOKE_IMAGE}" sh -c 'printf "%s-%s\n" "$1" "$2"' sh alpha beta)
           test "$result" = "alpha-beta"
@@ -158,20 +151,19 @@ jobs:
           fi
           echo "opencode debug config parsed and has no chat default."
 
-      - name: Smoke test writes and Rust compilation (default UID)
+      - name: Smoke test writes and immutable tools (default UID)
         run: |
           set -eu
           docker run --rm "${SMOKE_IMAGE}" sh -c '
             set -eu
             test "$(id -u)" = "1000"
-            test ! -w /usr/local/cargo/bin/cargo
-            test ! -w /usr/local/rustup/settings.toml
+            test ! -w /usr/local/bin/bun
+            test ! -w /usr/local/bin/opencode
+            test ! -w /usr/local/bin/uv
             touch "$HOME/.config/opencode/write-test"
             touch "$HOME/.cache/write-test"
             touch "$CARGO_HOME/write-test"
-            printf "%s\n" "fn main() { println!(\"rust-ok\"); }" > "$HOME/hello.rs"
-            rustc "$HOME/hello.rs" -o "$HOME/hello"
-            "$HOME/hello" | grep -q rust-ok
+            bun -e "console.log(\"bun-ok\")" | grep -q bun-ok
           '
 
       - name: Smoke test the chat overlay
@@ -184,7 +176,7 @@ jobs:
             "${SMOKE_IMAGE}" opencode debug config)
           printf '%s\n' "$config" | grep -qE '"default_agent"[[:space:]]*:[[:space:]]*"serious"'
 
-      - name: Smoke test writes and Rust compilation (configured non-root UID)
+      - name: Smoke test writes and tools (configured non-root UID)
         run: |
           set -eu
           # A different HOME does not change the image's /home/bun/workspace
@@ -200,9 +192,9 @@ jobs:
               touch "$CARGO_HOME/write-test"
               mkdir -p "$XDG_DATA_HOME/uv"
               touch "$XDG_DATA_HOME/uv/write-test"
-              printf "%s\n" "fn main() { println!(\"rust-ok\"); }" > "$HOME/hello.rs"
-              rustc "$HOME/hello.rs" -o "$HOME/hello"
-              "$HOME/hello" | grep -q rust-ok
+              bun -e "console.log(\"bun-ok\")" | grep -q bun-ok
+              uv --version
+              opencode --version
             '
           docker run --rm --workdir /tmp -e OPENCODE_UID=1500 -e OPENCODE_GID=1500 \
             -e OPENCODE_HOME=/tmp/opencode-1500 \
