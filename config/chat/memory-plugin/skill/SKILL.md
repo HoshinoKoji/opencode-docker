@@ -26,11 +26,12 @@ rules and requests not to record. Disable memory access in no-memory contexts.
 
 Use `scope` to narrow a tool call; with both spaces enabled, every write must
 select `shared` or `private`. Follow the read/merge/record workflow below using
-JSON tool arguments instead of shell input. `memory_read` takes `name`, `offset`,
-and `limit`; page until the whole body is read. Restart the read if revisions
+JSON tool arguments instead of shell input. `memory_read` takes `name`, optional
+`section` (exact heading title without `#`), `offset`, and `limit`. Restart the read if revisions
 change between pages. `memory_record` requires a unique `requestId` selected
 before the first call; retry with the same ID and content after a lost response.
-`memory_update` requires the complete Markdown body and `expectedRevision`.
+`memory_update` requires `expectedRevision` and the complete Markdown body, or
+the complete selected section including its heading when `section` is supplied.
 Inspect `isError` before treating a call as successful. No separate CLI write or
 manual index rebuild is needed after a successful MCP call.
 
@@ -58,14 +59,33 @@ from this repository, then omit `--dry-run` after reviewing the preview.
 
 ## Read
 
+Recall returns summary/navigation by default. If there is no summary heading and
+the body is at most 2000 characters, it returns the full body (`mode: full`);
+otherwise `mode: overview` applies. Short memories need no duplicate summary.
+
+Recall loads only summary/navigation, plus five recent records. Recognized titles
+are `速览摘要`, `摘要`, `Summary`, `Quick summary`, and navigation titles
+`内部导航与按需提取索引`, `内部索引`, `Navigation`, `Index` (case-sensitive).
+Missing summaries are explicit: use the returned section titles to read details,
+or read MEMORY.md directly. Recall text is capped at 10000 characters; section
+descriptors at 100 (`sectionsTotal`/`sectionsTruncated` indicate more).
+Page truncated summary/navigation with an explicit section read.
+
 ```sh
 "$MEMORY_CLI" recall --root "$MEMORY_ROOT" --space shared
 "$MEMORY_CLI" search "topic keywords" --root "$MEMORY_ROOT" --space shared
 "$MEMORY_CLI" read MEMORY.md --root "$MEMORY_ROOT" --space shared
+"$MEMORY_CLI" read MEMORY.md --section "速览摘要" --limit 2000
 ```
 
 Use returned filenames to read matching records. `read --offset N --limit N`
 pages the Markdown body by character offset. Metadata is returned separately.
+With `--section`, text includes the heading and nested sections through the next
+same/higher-level ATX heading; fenced code headings are ignored. Offset/total
+are section-relative. Missing or duplicate titles fail explicitly. Session
+records support section selection; INDEX.md supports only whole-body pagination.
+Revision and metadata always cover the full file. Before whole-file update, omit
+`--section` and read every body page. For section update, read all selected pages.
 `--space private` selects private memory; `--space both` is supported for reads.
 Search matches all literal whitespace-separated terms, including Chinese.
 Integrate relevant context naturally and prioritize the user's current words.
@@ -85,7 +105,7 @@ transcript. Use a unique, non-secret request ID per record; reuse it for retries
   --input /path/to/record.json --request-id harness-session-topic-unique-id
 ```
 
-For `update`, first read the entire `MEMORY.md` body, including all truncated
+For whole-file `update`, first read the entire `MEMORY.md` body, including all truncated
 pages. Merge only enduring facts/preferences into its existing organization.
 Pass `content` (the complete updated Markdown body, without YAML) and
 `expectedRevision` from that read. Preserve relevant information; mark obsolete
@@ -100,6 +120,15 @@ The CLI maintains frontmatter, IDs, revisions, locks, and generated indexes.
 Do not also edit `INDEX.md`. Keep sensitive credentials out of memory.
 
 ## Results
+
+For targeted `update`, include optional `section` in JSON/tool arguments, using
+an exact existing heading title. Read every selected-section page first. Supply
+the merged section as `content`, including its unchanged heading title and level
+and all nested subsections. Only lower-level nested headings may follow, and code
+fences must close. Other sections remain unchanged; `expectedRevision` still
+covers the full file. Reread after conflicts. Keep the summary/navigation in sync
+with changed facts, using the latest revision for subsequent updates. Renaming
+headings or restructuring multiple topics requires a whole-file update.
 
 Success: exit 0, one JSON object on stdout. Errors: JSON on stderr, exit 2 for
 usage/input errors or 1 for operation failures. Read error messages before

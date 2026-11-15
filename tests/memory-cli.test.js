@@ -6,6 +6,17 @@ import path from "node:path";
 
 const wrapper = path.resolve(import.meta.dir, "../memory.sh");
 const directories = [];
+test("CLI updates a section via JSON without changing siblings", async () => {
+  const { root, call } = await fixture();
+  await mkdir(path.join(root, ".sessions"));
+  await writeFile(path.join(root, ".sessions/MEMORY.md"), "# Memory\n## First\nold\n## Last\nkeep\n");
+  const read = JSON.parse(call(["read", "MEMORY.md", "--section", "First"]).stdout).results[0];
+  const input = JSON.stringify({ section: "First", content: "## First\nnew", expectedRevision: read.revision });
+  expect(call(["update", "--input=-"], input).status).toBe(0);
+  const after = JSON.parse(call(["read", "MEMORY.md"]).stdout).results[0];
+  expect(after.text).toBe("# Memory\n## First\nnew\n\n## Last\nkeep\n");
+  expect(call(["update", "--input=-"], input).status).toBe(1);
+});
 async function fixture() {
   const directory = await mkdtemp(path.join(os.tmpdir(), "memory-cli-test-"));
   directories.push(directory);
@@ -21,6 +32,24 @@ afterEach(async () => {
   for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 const record = { topic: "cli-bridge", goal: "Share memory", conclusion: "Use the CLI", details: "中文内容 with 'quotes' and $shell syntax.\nSecond line." };
+
+test("CLI progressive recall and section pagination", async () => {
+  const { root, call } = await fixture();
+  await writeFile(path.join(root, "MEMORY.md"), "# Memory\n## Summary\nbrief\n## Detail\nprivate-detail\n### Child\nnested\n## End\nstop\n");
+  const memory = JSON.parse(call(["recall"]).stdout).spaces[0].memory;
+  expect(memory.text).toContain("brief");
+  expect(memory.text).not.toContain("private-detail");
+  const whole = JSON.parse(call(["read", "MEMORY.md"]).stdout).results[0];
+  const selected = JSON.parse(call(["read", "MEMORY.md", "--section", "Detail"]).stdout).results[0];
+  expect(selected.text).toContain("nested");
+  expect(selected.text).not.toContain("stop");
+  expect(selected.revision).toBe(whole.revision);
+  const page = JSON.parse(call(["read", "MEMORY.md", "--section=Detail", "--offset=3", "--limit=5"]).stdout).results[0];
+  expect(page.text).toBe(selected.text.slice(3, 8));
+  expect(page.total).toBe(selected.total);
+  expect(call(["read", "MEMORY.md", "--section=missing"]).stderr).toContain("Section not found");
+  expect(call(["recall", "--section=Detail"]).status).toBe(2);
+});
 
 test("CLI help is side-effect free even with a nonexistent root", async () => {
   const { root, call } = await fixture();

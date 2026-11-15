@@ -6,7 +6,7 @@ import { MemoryStore } from "./store.js";
 const help = `Usage: memory.sh <command> [OPTIONS]
 
 Commands:
-  recall                    Review long-term memory and five recent records
+  recall                    Review summary/navigation and five recent records
   search QUERY              Search literal, whitespace-separated terms
   read NAME                 Read MEMORY.md, INDEX.md, or a returned filename
   record --input FILE|-      Save a topic from JSON and rebuild its index
@@ -18,6 +18,8 @@ Options (also accept --flag=VALUE):
                             Space to use (default: shared; both is read-only)
   --limit N                 Search matches (1..20) or read characters (1..20000)
   --offset N                Read body offset in characters (default: 0)
+  --section TITLE           Exact heading title without #; read only (not INDEX.md)
+                            Includes nested sections; pagination is section-relative
   --input FILE|-            JSON file, or - for stdin; required for writes
   --request-id ID           Stable record retry key; default: generated UUID
   -h, --help                Show help without accessing memory
@@ -28,7 +30,11 @@ Record JSON:
   Optional string fields: decisions, nextSteps, preferences.
 Update JSON:
   {"content":"Complete merged Markdown body","expectedRevision":"from read"}
-  Read every page first. YAML metadata is maintained by the store.
+  Optional JSON field section selects one section to replace, including its
+  unchanged heading title/level. Read every selected-section page first; for
+  full updates read every whole-body page (omit --section). Section reads return the
+  full-file revision and metadata; missing/duplicate titles fail explicitly.
+  Recall reports missing summaries; use read MEMORY.md to retrieve details.
 
 Successful operations print one JSON object to stdout. Errors print a JSON
 error to stderr: exit 2 for usage/input, 1 for an operation failure. No LLM or
@@ -44,7 +50,7 @@ const usageError = (message) => { throw new UsageError(message); };
 const allowed = {
   recall: ["root", "space"],
   search: ["root", "space", "limit"],
-  read: ["root", "space", "limit", "offset"],
+  read: ["root", "space", "limit", "offset", "section"],
   record: ["root", "space", "input", "request-id"],
   update: ["root", "space", "input"],
 };
@@ -58,7 +64,7 @@ function parse(args) {
     if (argument === "--help" || argument === "-h") return { help: true };
     if (!argument.startsWith("-")) { positional.push(argument); continue; }
     const match = /^--([a-z-]+)(?:=(.*))?$/s.exec(argument);
-    if (!match || !["root", "space", "limit", "offset", "input", "request-id"].includes(match[1])) {
+    if (!match || !["root", "space", "limit", "offset", "section", "input", "request-id"].includes(match[1])) {
       usageError(`Unknown option: ${argument}. Use --help for usage.`);
     }
     const key = match[1];
@@ -102,7 +108,7 @@ async function inputJSON(filename, command) {
   try { input = JSON.parse(raw); } catch { usageError("Input must be valid JSON."); }
   if (!input || typeof input !== "object" || Array.isArray(input)) usageError("Input must be a JSON object.");
   const required = command === "record" ? ["topic", "goal", "conclusion", "details"] : ["content", "expectedRevision"];
-  const fields = command === "record" ? [...required, "decisions", "nextSteps", "preferences"] : required;
+  const fields = command === "record" ? [...required, "decisions", "nextSteps", "preferences"] : [...required, "section"];
   for (const [key, value] of Object.entries(input)) {
     if (!fields.includes(key)) usageError(`Unknown input field: ${key}. Select memory space with --space.`);
     if (typeof value !== "string") usageError(`${key} must be a string.`);
@@ -131,7 +137,7 @@ export async function run(args, env = process.env) {
     input.query = operand;
   }
   if (command === "read") input.name = operand;
-  for (const key of ["limit", "offset"]) if (options[key] !== undefined) input[key] = options[key];
+  for (const key of ["limit", "offset", "section"]) if (options[key] !== undefined) input[key] = options[key];
   if (command === "record") {
     const requestId = options["request-id"] ?? randomUUID();
     return { result: { ...await store.record(agent, input, `cli:${requestId}`), requestId } };

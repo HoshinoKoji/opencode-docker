@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { decode, encode, legacyMetadata, oneLine } from "./format.js";
+import { descriptor, overview, sections, replaceSection } from "./sections.js";
 
 const revision = (text) => createHash("sha256").update(text).digest("hex");
 const roots = { shared: ".sessions", private: ".sessions/casual" };
@@ -157,7 +158,7 @@ export class MemoryStore {
       const entries = await this.entries(scope);
       spaces.push({
         scope,
-        memory: { name: "MEMORY.md", metadata: document.metadata, revision: revision(text), ...limitText(document.body, 10000) },
+        memory: { name: "MEMORY.md", metadata: document.metadata, revision: revision(text), ...overview(document.body) },
         recent: entries.slice(0, 5).map((entry) => this.indexLine(entry)),
       });
     }
@@ -230,17 +231,29 @@ export class MemoryStore {
     return { matches: results.length, results: results.slice(0, limit) };
   }
 
-  async read(agent, { name, scope = "default", offset = 0, limit = 12000 }) {
+  async read(agent, { name, scope = "default", section, offset = 0, limit = 12000 }) {
     const spaces = this.scopes(agent, scope);
     if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 20000) {
       throw new Error("offset must be nonnegative; limit must be between 1 and 20000.");
     }
     const results = [];
+    if (section !== undefined && (typeof section !== "string" || !section.trim())) throw new Error("section must be a non-empty exact heading title (without # markers).");
+    if (section !== undefined && name === "INDEX.md") throw new Error("Section selection is unsupported for INDEX.md; use offset/limit.");
     for (const space of spaces) {
       const raw = name === "INDEX.md" ? await this.indexText(space) : await this.text(await this.source(space, name));
       const document = decode(raw);
+      let body = document.body;
+      let selected;
+      if (section !== undefined) {
+        const matches = sections(body).filter(({ title }) => title === section);
+        if (!matches.length) throw new Error(`Section not found: ${section} in ${space}/${name}.`);
+        if (matches.length > 1) throw new Error(`Ambiguous section: ${section} in ${space}/${name}; use whole-file read.`);
+        selected = descriptor(matches[0]);
+        body = body.slice(matches[0].start, matches[0].end);
+      }
       results.push({ scope: space, name, metadata: document.metadata, revision: revision(raw), offset,
-        ...limitText(document.body.slice(offset), limit), total: document.body.length });
+        ...(selected ? { section: selected, guidance: "Read all selected-section pages before updating with section and the original heading included. For whole-file updates omit section and read all body pages. Revision covers the full file." } : {}),
+        ...limitText(body.slice(offset), limit), total: body.length });
     }
     return { results };
   }
@@ -288,7 +301,7 @@ export class MemoryStore {
     });
   }
 
-  async update(agent, { content, expectedRevision, scope = "default", share = false }) {
+  async update(agent, { content, expectedRevision, section, scope = "default", share = false }) {
     const [space] = this.scopes(agent, scope, true, share === true);
     if (typeof content !== "string" || !content.trim() || content.length > 100000) {
       throw new Error("Long-term memory must be non-empty and at most 100000 characters.");
@@ -305,10 +318,12 @@ export class MemoryStore {
         topic: "long-term-memory", summary: "Long-term preferences and context", created_at: now,
       };
       if (metadata.type !== "long_term") throw new Error("MEMORY.md must have long_term metadata.");
-      const text = encode({ ...metadata, updated_at: now }, `${content.trim()}\n`);
+      const body = section === undefined ? `${content.trim()}\n` : replaceSection(document.body, section, content);
+      if (body.length > 100000) throw new Error("Long-term memory must be at most 100000 characters.");
+      const text = encode({ ...metadata, updated_at: now }, body);
       if (space === "shared") await this.relocateShared();
       await this.atomic(relative, text);
-      return { scope: space, name: "MEMORY.md", revision: revision(text) };
+      return { scope: space, name: "MEMORY.md", ...(section === undefined ? {} : { section }), revision: revision(text) };
     });
   }
 }

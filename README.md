@@ -216,9 +216,9 @@ Markdown files, adds YAML frontmatter for structured metadata, and provides five
 
 | Tool | Purpose |
 | --- | --- |
-| `memory_recall` | Read long-term memory and five recent index entries |
+| `memory_recall` | Read summary/navigation, available section titles, and five recent index entries |
 | `memory_search` | Find matching records with short snippets |
-| `memory_read` | Read a record or page through a long memory file |
+| `memory_read` | Read a record or memory file, optionally selecting an exact heading title with `section` |
 | `memory_record` | Save a topic record and update its index together |
 | `memory_update` | Update long-term memory with revision conflict detection |
 
@@ -517,6 +517,12 @@ are retained by Docker during upgrades and can be mounted explicitly.
 
 ### Memory Format and Migration
 
+Recall uses summary/navigation for long-term memory, with one short-file exception:
+without a summary heading, a body of at most 2000 characters is returned in full
+(`mode: full`). Otherwise `mode: overview` applies; long files with no summary
+report that explicitly and provide section navigation. A short memory therefore
+needs no redundant summary. This rule is shared by the plugin, CLI, and MCP.
+
 Memory uses Markdown with YAML frontmatter, parsed with Bun's built-in YAML
 support. For example:
 
@@ -656,7 +662,7 @@ unique request ID per record and reuse it on retries; the store finds an existin
 record even after a filename/date change. Without `--request-id`, the CLI
 generates one and returns it as `requestId`. JSON cannot override the space.
 
-For long-term updates, read the entire body first, merge changes, and submit:
+For whole-file long-term updates, read the entire body first, merge changes, and submit:
 
 ```json
 {
@@ -668,6 +674,25 @@ For long-term updates, read the entire body first, merge changes, and submit:
 ```bash
 "$MEMORY_CLI" update --input update.json
 ```
+
+To edit only one section, first read every page of that section and include
+`section` in the update JSON (also supported by plugin and MCP tools):
+
+```json
+{
+  "section": "交流风格与记忆维护偏好",
+  "content": "## 交流风格与记忆维护偏好\n\nMerged section content, including any nested subsections.",
+  "expectedRevision": "full-file revision returned by the section read"
+}
+```
+
+The exact title must identify one existing section. Keep its heading title and
+level; only lower-level nested headings may follow it, and code fences must be
+closed. All content outside the selected section stays byte-for-byte unchanged.
+The full-file revision still detects edits elsewhere; reread and merge on conflict.
+Metadata and stable ID are preserved. Update affected summary/navigation sections
+separately using the latest revision so the overview stays consistent. Whole-file
+updates remain available for renaming headings or restructuring several topics.
 
 Success returns one JSON object on stdout and exits 0. Usage/JSON validation
 errors return JSON on stderr and exit 2; filesystem/store errors exit 1.
@@ -740,13 +765,27 @@ Tools are `memory_recall`, `memory_search`, `memory_read`, `memory_record`, and
 `memory_update`. Arguments use the CLI's JSON field names plus optional `scope`.
 `memory_record` **requires `requestId`**: choose a unique, non-secret ID before
 the first call and reuse it with identical content on retries, including lost
-responses. `memory_read` accepts `name`, `offset`, and `limit` (up to 20000
+responses. `memory_read` accepts `name`, optional `section`, `offset`, and `limit` (up to 20000
 characters), returning `total`, `truncated`, metadata, and `revision` separately.
-Read every page before `memory_update`; send the complete merged body as
+`section` selects an exact ATX heading title without `#` markers, includes its
+heading and nested sections, and ends at the next same/higher-level heading.
+Fenced code headings are ignored; missing or duplicate titles produce explicit
+errors. Pagination (`offset`, `total`, `truncated`) is relative to that selection;
+metadata and revision still cover the full file. Session records also support
+sections; INDEX.md supports only whole-body pagination. The CLI equivalent is
+`memory.sh read MEMORY.md --section "速览摘要" --offset 0 --limit 2000`.
+For whole-file `memory_update`, omit `section` and read every whole-body page; send the complete merged body as
 `content` and its `expectedRevision`. If a revision changes during paging or
 update, read again and merge. Search takes `query` and optional `limit` (1–20),
 returning total matches and a bounded result list. Recall returns five recent
-entries per space. Tool results include JSON text and `structuredContent`;
+entries per space plus summary/navigation only, with section title/level
+descriptors for targeted loading. Recognized summary titles are `速览摘要`, `摘要`,
+`Summary`, and `Quick summary`; navigation titles are `内部导航与按需提取索引`,
+`内部索引`, `Navigation`, and `Index` (exact, case-sensitive). Missing summaries
+are reported explicitly, with guidance to read MEMORY.md. Recall text is capped
+at 10000 characters and descriptors at 100 (`sectionsTotal`/`sectionsTruncated`
+report overflow); page summary/navigation using their section titles or use a
+whole-body read to discover further headings. Tool results include JSON text and `structuredContent`;
 operation errors set `isError`. Stdout carries only MCP messages; startup errors
 and help go to stderr.
 

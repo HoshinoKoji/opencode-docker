@@ -6,8 +6,30 @@ import plugin from "../config/chat/memory-plugin/index.js";
 import { MemoryStore } from "../config/chat/memory-plugin/store.js";
 import { decode, encode } from "../config/chat/memory-plugin/format.js";
 import { migrate, relocateShared } from "../config/chat/memory-plugin/manage.js";
+import { sections } from "../config/chat/memory-plugin/sections.js";
 
 const directories = [];
+test("section updates preserve surrounding bytes, metadata and reject unsafe replacements", async () => {
+  const { root, store } = await fixture();
+  const body = "# Memory\nintro\n\n## First\nold\n### Child\nnested\n\n## Last\nkeep exactly\n";
+  const empty = (await store.read("serious", { name: "MEMORY.md" })).results[0];
+  await store.update("serious", { content: body, expectedRevision: empty.revision });
+  const before = (await store.read("serious", { name: "MEMORY.md", section: "First" })).results[0];
+  for (const [section, content] of [["Missing", "## Missing\nx"], ["First", "## Renamed\nx"], ["First", "# First\nx"], ["First", "## First\nx\n## Other\ny"], ["First", "## First\n```js\nx"]]) {
+    await expect(store.update("serious", { section, content, expectedRevision: before.revision })).rejects.toThrow();
+    expect((await store.read("serious", { name: "MEMORY.md" })).results[0].revision).toBe(before.revision);
+  }
+  await store.update("serious", { section: "First", content: "## First\nnew\n### Child\nchanged", expectedRevision: before.revision });
+  const after = (await store.read("serious", { name: "MEMORY.md" })).results[0];
+  expect(after.text).toBe("# Memory\nintro\n\n## First\nnew\n### Child\nchanged\n\n## Last\nkeep exactly\n");
+  expect(after.metadata.id).toBe(before.metadata.id);
+  expect(after.metadata.created_at).toBe(before.metadata.created_at);
+  await expect(store.update("serious", { section: "First", content: "## First\nstale", expectedRevision: before.revision })).rejects.toThrow("Memory changed");
+  await expect(store.update("plan", { section: "First", content: "## First\nx", expectedRevision: after.revision })).rejects.toThrow("read-only");
+  await writeFile(path.join(root, ".sessions/MEMORY.md"), "## Same\na\n## Same\nb\n");
+  const duplicate = (await store.read("serious", { name: "MEMORY.md" })).results[0];
+  await expect(store.update("serious", { section: "Same", content: "## Same\nx", expectedRevision: duplicate.revision })).rejects.toThrow("Ambiguous");
+});
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "workspace-memory-test-"));
   directories.push(root);
@@ -20,6 +42,74 @@ const input = {
   topic: "container-memory", goal: "Reduce tool calls", conclusion: "Keep Markdown files",
   details: "Discussed a plugin and retained readable files.\n\nNext: verify the integration.",
 };
+
+test("ATX parser handles CRLF, fence lengths, closing hashes and level boundaries", () => {
+  const body = "   ## Parent ###\r\ntext\r\n````md\r\n## hidden\r\n```\r\n## still hidden\r\n````\r\n### Child\r\n###### Deep\r\n####### not ATX\r\n    ## indented code\r\n# End\r\n";
+  const parsed = sections(body);
+  expect(parsed.map(({ title, level }) => ({ title, level }))).toEqual([
+    { title: "Parent", level: 2 }, { title: "Child", level: 3 },
+    { title: "Deep", level: 6 }, { title: "End", level: 1 },
+  ]);
+  expect(parsed[0].end).toBe(body.indexOf("# End"));
+  expect(parsed[1].end).toBe(parsed[0].end);
+});
+
+test("progressive recall exposes summaries/navigation, and section reads preserve full revisions", async () => {
+  const { root, store } = await fixture();
+  const body = "# 日常模式长期记忆\n## 速览摘要\nCompact summary\n## 内部导航与按需提取索引\nSee preferences\n## 交流风格与记忆维护偏好\nDETAIL-ONLY\n### Nested\nchild\n```md\n## Fake\n```\n~~~\n## Also fake\n~~~\n## Other\nexcluded\n";
+  const initial = (await store.read("build", { name: "MEMORY.md" })).results[0];
+  await store.update("build", { content: body, expectedRevision: initial.revision });
+  const whole = (await store.read("build", { name: "MEMORY.md" })).results[0];
+  const memory = (await store.recall("build")).spaces[0].memory;
+  expect(memory.text).toContain("Compact summary");
+  expect(memory.text).toContain("See preferences");
+  expect(memory.text).not.toContain("DETAIL-ONLY");
+  expect(memory.summaryFound).toBe(true);
+  expect(memory.sections.some((s) => s.title === "Fake")).toBe(false);
+  const args = { name: "MEMORY.md", section: "交流风格与记忆维护偏好" };
+  const selected = (await store.read("build", args)).results[0];
+  expect(selected.text).toContain("### Nested\nchild");
+  expect(selected.text).not.toContain("excluded");
+  expect(selected.revision).toBe(whole.revision);
+  expect(selected.metadata).toEqual(whole.metadata);
+  const page = (await store.read("build", { ...args, offset: 7, limit: 11 })).results[0];
+  expect(page.text).toBe(selected.text.slice(7, 18));
+  expect(page.total).toBe(selected.text.length);
+  expect(page.truncated).toBe(true);
+  expect((await store.read("build", { ...args, offset: selected.total })).results[0].text).toBe("");
+  await expect(store.read("build", { ...args, section: "Fake" })).rejects.toThrow("Section not found");
+  await expect(store.read("build", { name: "INDEX.md", section: "Memory index" })).rejects.toThrow("unsupported");
+  await store.update("build", { content: body + "## Other\nduplicate\n", expectedRevision: whole.revision });
+  await expect(store.read("build", { ...args, section: "Other" })).rejects.toThrow("Ambiguous section");
+  await expect(store.update("build", { content: body, expectedRevision: selected.revision })).rejects.toThrow("Memory changed");
+});
+
+test("recall returns short unsummarized files in full but never excerpts long details", async () => {
+  const { root, store } = await fixture();
+  for (const body of ["short lasting preference", "x".repeat(2000), "x".repeat(2001), "# Memory\n## Details\n" + "SECRET".repeat(3000), "## 内部索引\nFind details\n## Details\nSECRET"]) {
+    await writeFile(path.join(root, "MEMORY.md"), body);
+    const memory = (await store.recall("build")).spaces[0].memory;
+    expect(memory.summaryFound).toBe(false);
+    expect(memory.mode).toBe(body.length <= 2000 ? "full" : "overview");
+    if (body.length <= 2000) {
+      expect(memory.text).toBe(body);
+      expect(memory.total).toBe(body.length);
+      expect(memory.truncated).toBe(false);
+    } else {
+      expect(memory.guidance).toContain("Summary missing");
+      expect(memory.text).not.toContain("SECRET");
+      expect(memory.text).toBe("");
+    }
+    expect(memory.guidance).toContain("Read MEMORY.md");
+  }
+  await writeFile(path.join(root, "MEMORY.md"), "## Summary\n" + "x".repeat(12000) + "\n## Navigation\nlinks\n" + Array.from({ length: 110 }, (_, i) => `## Detail ${i}\nsecret\n`).join(""));
+  const memory = (await store.recall("build")).spaces[0].memory;
+  expect(memory.text).toHaveLength(10000);
+  expect(memory.truncated).toBe(true);
+  expect(memory.sections).toHaveLength(100);
+  expect(memory.sectionsTruncated).toBe(true);
+  expect((await store.read("build", { name: "MEMORY.md", section: "Navigation" })).results[0].text).toBe("## Navigation\nlinks\n");
+});
 
 test("reviewing an empty workspace has no filesystem side effects", async () => {
   const { root, store } = await fixture();
@@ -353,11 +443,15 @@ test("plugin uses execution context identity and honors host permission failures
     } },
   });
   expect(tools.size).toBe(5);
+  expect(tools.get("read").input.properties.section.type).toBe("string");
   const context = { agent: "casual", sessionID: "session", messageID: "message", id: "call" };
   const output = await tools.get("record").execute({ ...input, agent: "serious" }, context);
   expect(JSON.parse(output.content).scope).toBe("private");
   expect(assertions[0].agent).toBe("casual");
   expect(assertions[0].resources).toEqual(["private"]);
+  const selected = JSON.parse((await tools.get("read").execute({ name: JSON.parse(output.content).name, scope: "private", section: "Details" }, context)).content).results[0];
+  expect(selected.text).toBe(`## Details\n${input.details}\n`);
+  expect(selected.metadata.topic).toBe(input.topic);
   await expect(tools.get("recall").execute({}, { ...context, agent: "temp" })).rejects.toThrow();
   await tools.get("recall").execute({}, { ...context, agent: "plan" });
   expect(assertions.at(-1).resources).toEqual(["shared"]);

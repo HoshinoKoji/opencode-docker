@@ -10,6 +10,18 @@ import { ExternalMemoryStore } from "./policy.js";
 const launcher = path.resolve(import.meta.dir, "../../..", "memory-mcp.sh");
 const directories = [];
 const clients = [];
+test("stdio updates only selected section with revision checks", async () => {
+  const root = await fixture();
+  await writeFile(path.join(root, ".sessions/MEMORY.md"), "# Memory\n## First\nold\n## Last\nkeep\n");
+  const { client } = await connect(root);
+  const read = (await result(client, "read", { name: "MEMORY.md", section: "First" })).results[0];
+  const input = { section: "First", content: "## First\nnew", expectedRevision: read.revision };
+  await result(client, "update", input);
+  expect((await result(client, "read", { name: "MEMORY.md" })).results[0].text).toBe("# Memory\n## First\nnew\n\n## Last\nkeep\n");
+  await denied(client, "update", input);
+  const { client: readonly } = await connect(root, ["--read-only"]);
+  await denied(readonly, "update", input);
+});
 const record = { topic: "mcp-test", goal: "Share memory", conclusion: "Saved", details: "中文 discussion", requestId: "stable-request" };
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "memory-mcp-test-"));
@@ -74,6 +86,27 @@ test("stdio initialize/list/call defaults to shared and cannot expose private da
   expect(await readFile(path.join(root, ".sessions/casual/MEMORY.md"), "utf8")).toContain("private-marker");
   expect(await readdir(path.join(root, ".sessions/casual"))).toEqual(["MEMORY.md"]);
   expect(diagnostics()).toBe("");
+});
+
+test("stdio exposes section schema and progressive recall with full-file revisions", async () => {
+  const root = await fixture();
+  await writeFile(path.join(root, ".sessions/MEMORY.md"), "# Memory\n## Summary\nbrief\n## Detail\nsecret-detail\n### Child\nnested\n## End\nstop\n");
+  const { client } = await connect(root);
+  const schema = (await client.listTools()).tools.find((tool) => tool.name === "memory_read").inputSchema;
+  expect(schema.properties.section.type).toBe("string");
+  const memory = (await result(client, "recall")).spaces[0].memory;
+  expect(memory.text).toContain("brief");
+  expect(memory.text).not.toContain("secret-detail");
+  const whole = (await result(client, "read", { name: "MEMORY.md" })).results[0];
+  const selected = (await result(client, "read", { name: "MEMORY.md", section: "Detail" })).results[0];
+  expect(selected.text).toContain("nested");
+  expect(selected.text).not.toContain("stop");
+  expect(selected.revision).toBe(whole.revision);
+  const page = (await result(client, "read", { name: "MEMORY.md", section: "Detail", offset: 4, limit: 5 })).results[0];
+  expect(page.text).toBe(selected.text.slice(4, 9));
+  expect(page.total).toBe(selected.total);
+  await denied(client, "read", { name: "MEMORY.md", section: "missing" });
+  await denied(client, "read", { name: "INDEX.md", section: "Memory index" });
 });
 
 test("records retry across renamed dates, reject changed retries, page reads and enforce revisions", async () => {
