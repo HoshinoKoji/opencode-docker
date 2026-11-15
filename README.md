@@ -187,7 +187,7 @@ Switch agents in the OpenCode interface:
 
 | Agent | Use case | Memory |
 | --- | --- | --- |
-| `serious` (default) | Calm, direct discussion and tasks needing follow-up | Reads and writes shared memory in `MEMORY.md` and `.sessions/` |
+| `serious` (default) | Calm, direct discussion and tasks needing follow-up | Reads and writes shared memory in `.sessions/MEMORY.md` and `.sessions/` |
 | `casual` | Relaxed, familiar conversation with light humor | May read shared memory; writes privately in `.sessions/casual/` by default |
 | `temp` | One-off questions and temporary conversations | Workspace memory and file/command tools are disabled |
 | `build` (built-in) | Coding and implementation | Reads and writes shared memory only |
@@ -559,21 +559,43 @@ bun config/chat/memory-plugin/manage.js migrate
 
 # Recreate derived indexes after file synchronization or manual metadata edits.
 bun config/chat/memory-plugin/manage.js reindex
+
+# Preview and then relocate only shared root MEMORY.md, preserving every byte.
+bun config/chat/memory-plugin/manage.js relocate-shared --dry-run
+bun config/chat/memory-plugin/manage.js relocate-shared
 ```
 
-Both commands accept `--root DIR` and `--scope shared|private|both` (default:
+The `migrate` and `reindex` commands accept `--root DIR` and `--scope shared|private|both` (default:
 current directory, both spaces). Migration is repeatable: files that already
 have supported frontmatter are left untouched. It validates all selected files
 before writing. Legacy files without frontmatter remain readable, searchable,
 and indexable throughout the transition. Empty placeholder files are reported
 under `skippedEmpty` and left untouched; they are excluded from generated indexes.
 
+Shared long-term memory lives at `.sessions/MEMORY.md`. Read tools fall back to
+root `MEMORY.md` for older workspaces; their logical filename remains `MEMORY.md`.
+`relocate-shared` accepts `--root DIR`, optional `--scope shared`, and `--dry-run`;
+it touches only shared long-term memory. Preview creates no files or lock.
+Execution holds the store lock, backs up the original with a SHA-256 manifest,
+creates the destination exclusively, verifies full bytes, then removes the root
+original. Repeating it is a no-op. IDs, metadata, body and revision are preserved.
+Long-term updates perform the same backed-up relocation after revision validation;
+the `migrate` metadata command retains each file's current physical path.
+If both paths exist (even identical files or empty placeholders), reads, updates,
+and migrations report a conflict. Back up and reconcile them explicitly. An
+interrupted relocation can leave both paths plus its backup; resolve that conflict
+before retrying. Coordinate external editors/sync clients while relocating:
+the local lock coordinates store writers only.
+
 Each migration with changes first backs up original documents and indexes to
 `.sessions/.backups/<batch>/` and `.sessions/casual/.backups/<batch>/`, keeping
 private backups in the private space. Each backup's `manifest.json` records the
 original relative paths and SHA-256 checksums. To restore, stop memory writers
-and copy originals to those paths; shared `MEMORY.md` belongs at the workspace
-root. Backups are excluded from memory searches, Git, and image builds.
+and copy originals to those paths. Older backups and relocation backups name root
+`MEMORY.md`; newer canonical backups name `.sessions/MEMORY.md`. When restoring a
+root backup after relocation, first back up and remove the canonical counterpart
+to avoid a dual-path conflict, then optionally run `relocate-shared` again.
+Backups are excluded from memory searches, Git, and image builds.
 
 Migration adds metadata without rewriting the existing body, including its old
 summary section. Session summaries/preferences are extracted from the English
@@ -583,8 +605,8 @@ session timestamps use midnight UTC on the filename date and are marked
 time, marked `legacy-file-mtime`. These are migration approximations, not newly
 discovered historical creation times.
 
-For multi-device sync and backup, the authoritative files are `MEMORY.md` and
-the dated Markdown records in both spaces. Indexes are disposable derived data.
+For multi-device sync and backup, the authoritative files are `.sessions/MEMORY.md`,
+`.sessions/casual/MEMORY.md`, and the dated Markdown records in both spaces. Indexes are disposable derived data.
 Keep a backup copy separately if desired. Simultaneous edits to the same file
 still require normal sync-conflict resolution; local locks do not coordinate
 machines.

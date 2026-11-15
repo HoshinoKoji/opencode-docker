@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { decode, encode, legacyMetadata, oneLine } from "./format.js";
 
 const revision = (text) => createHash("sha256").update(text).digest("hex");
-const roots = { shared: "", private: ".sessions/casual" };
+const roots = { shared: ".sessions", private: ".sessions/casual" };
 const limitText = (text, limit) => ({ text: text.slice(0, limit), truncated: text.length > limit });
 
 export class MemoryStore {
@@ -61,6 +62,60 @@ export class MemoryStore {
     }
   }
 
+  // Resolve physical source paths separately so backup manifests remain restorable.
+  async source(scope, name) {
+    const canonical = this.relative(scope, name);
+    if (scope !== "shared" || name !== "MEMORY.md") return canonical;
+    const exists = async (relative) => {
+      try {
+        const info = await lstat(await this.checked(relative));
+        if (!info.isFile()) throw new Error(`Memory path must be a regular file: ${relative}`);
+        return true;
+      } catch (error) {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      }
+    };
+    const current = await exists(canonical);
+    const legacy = await exists("MEMORY.md");
+    if (current && legacy) throw new Error("Shared memory conflict: both MEMORY.md and .sessions/MEMORY.md exist. Back up and reconcile them before retrying (including empty placeholders).");
+    return legacy ? "MEMORY.md" : canonical;
+  }
+
+  // Caller holds locked(), except for the strictly read-only preview.
+  async relocateShared({ dryRun = false } = {}) {
+    const source = await this.source("shared", "MEMORY.md");
+    const target = this.relative("shared", "MEMORY.md");
+    const report = { source, target, moved: false, dryRun, backup: null };
+    if (source === target) return report;
+    const originalPath = await this.checked(source);
+    const original = await readFile(originalPath);
+    const sha256 = revision(original);
+    if (dryRun) return { ...report, wouldMove: true, sha256 };
+    const batch = `relocate-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}`;
+    const directory = path.join(".sessions", ".backups", batch);
+    const absolute = await this.checked(directory);
+    await mkdir(absolute, { recursive: true, mode: 0o700 });
+    const backup = path.join(directory, "MEMORY.md");
+    await writeFile(await this.checked(backup), original, { flag: "wx", mode: 0o600 });
+    await writeFile(path.join(absolute, "manifest.json"), JSON.stringify({
+      schema_version: 1, scope: "shared", operation: "relocate-shared", target,
+      files: [{ backup: "MEMORY.md", path: source, sha256 }],
+    }, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+    const verify = async (filename) => {
+      if (!(await readFile(filename)).equals(original)) throw new Error(`File changed during shared relocation: ${filename}. Original backup: ${backup}`);
+    };
+    await verify(await this.checked(backup));
+    await verify(originalPath);
+    // Exclusive creation protects even against a destination appearing after preflight.
+    const destination = await this.checked(target);
+    await copyFile(await this.checked(backup), destination, constants.COPYFILE_EXCL);
+    await verify(destination);
+    await verify(originalPath);
+    await unlink(originalPath);
+    return { ...report, moved: true, backup, sha256 };
+  }
+
   async atomic(relative, text) {
     const filename = await this.checked(relative);
     await mkdir(path.dirname(filename), { recursive: true });
@@ -97,7 +152,7 @@ export class MemoryStore {
   async recall(agent, { scope: requestedScope = "default" } = {}) {
     const spaces = [];
     for (const scope of this.scopes(agent, requestedScope)) {
-      const text = await this.text(this.relative(scope, "MEMORY.md"));
+      const text = await this.text(await this.source(scope, "MEMORY.md"));
       const document = decode(text);
       const entries = await this.entries(scope);
       spaces.push({
@@ -162,7 +217,7 @@ export class MemoryStore {
     const results = [];
     for (const space of this.scopes(agent, scope)) {
       for (const name of await this.names(space)) {
-        const raw = await this.text(this.relative(space, name));
+        const raw = await this.text(await this.source(space, name));
         const document = decode(raw);
         const text = `${document.metadata ? `${document.metadata.topic}\n${document.metadata.summary}\n` : ""}${document.body}`;
         const lower = text.toLocaleLowerCase();
@@ -182,7 +237,7 @@ export class MemoryStore {
     }
     const results = [];
     for (const space of spaces) {
-      const raw = name === "INDEX.md" ? await this.indexText(space) : await this.text(this.relative(space, name));
+      const raw = name === "INDEX.md" ? await this.indexText(space) : await this.text(await this.source(space, name));
       const document = decode(raw);
       results.push({ scope: space, name, metadata: document.metadata, revision: revision(raw), offset,
         ...limitText(document.body.slice(offset), limit), total: document.body.length });
@@ -240,7 +295,7 @@ export class MemoryStore {
     }
     return this.locked(async () => {
       const relative = this.relative(space, "MEMORY.md");
-      const previous = await this.text(relative);
+      const previous = await this.text(await this.source(space, "MEMORY.md"));
       if (revision(previous) !== expectedRevision) throw new Error("Memory changed since it was read. Read MEMORY.md again and merge your changes.");
       const document = decode(previous);
       if (decode(content).metadata) throw new Error("Pass only the Markdown body to update; the plugin preserves metadata automatically.");
@@ -251,6 +306,7 @@ export class MemoryStore {
       };
       if (metadata.type !== "long_term") throw new Error("MEMORY.md must have long_term metadata.");
       const text = encode({ ...metadata, updated_at: now }, `${content.trim()}\n`);
+      if (space === "shared") await this.relocateShared();
       await this.atomic(relative, text);
       return { scope: space, name: "MEMORY.md", revision: revision(text) };
     });

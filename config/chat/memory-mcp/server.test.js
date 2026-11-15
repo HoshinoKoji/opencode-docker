@@ -15,7 +15,7 @@ async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "memory-mcp-test-"));
   directories.push(root);
   await mkdir(path.join(root, ".sessions/casual"), { recursive: true });
-  await writeFile(path.join(root, "MEMORY.md"), "# Shared\nshared-marker\n");
+  await writeFile(path.join(root, ".sessions/MEMORY.md"), "# Shared\nshared-marker\n");
   await writeFile(path.join(root, ".sessions/casual/MEMORY.md"), "# Private\nprivate-marker\n");
   return root;
 }
@@ -92,9 +92,9 @@ test("records retry across renamed dates, reject changed retries, page reads and
   const before = (await result(client, "read", { name: "MEMORY.md" })).results[0];
   const input = { content: "# Shared\nMerged preference", expectedRevision: before.revision };
   await result(client, "update", input);
-  const raw = await readFile(path.join(root, "MEMORY.md"), "utf8");
+  const raw = await readFile(path.join(root, ".sessions/MEMORY.md"), "utf8");
   await denied(client, "update", input);
-  expect(await readFile(path.join(root, "MEMORY.md"), "utf8")).toBe(raw);
+  expect(await readFile(path.join(root, ".sessions/MEMORY.md"), "utf8")).toBe(raw);
   expect((await result(client, "read", { name: "MEMORY.md" })).results[0].metadata.type).toBe("long_term");
 });
 
@@ -128,7 +128,7 @@ test("read-only hides writes and denies direct calls and store mutations", async
   await expect(store.record(null, { ...record, scope: "shared" }, "direct")).rejects.toThrow("read-only");
   await expect(store.update(null, { scope: "private", content: "changed" })).rejects.toThrow("read-only");
   expect((await result(client, "read", { name: "MEMORY.md" })).results).toEqual(before);
-  expect(await readdir(path.join(root, ".sessions"))).toEqual(["casual"]);
+  expect(await readdir(path.join(root, ".sessions"))).toEqual(["MEMORY.md", "casual"]);
 });
 
 test("strict schemas reject invalid calls and memory symlinks cannot cross scope", async () => {
@@ -142,12 +142,12 @@ test("strict schemas reject invalid calls and memory symlinks cannot cross scope
     ["record", { ...record, details: 12 }], ["record", { ...record, share: true }],
     ["record", { ...record, topic: "../escape" }], ["update", { content: "missing revision" }],
   ]) await denied(client, name, args);
-  await rm(path.join(root, "MEMORY.md"));
-  await symlink(path.join(root, ".sessions/casual/MEMORY.md"), path.join(root, "MEMORY.md"));
+  await rm(path.join(root, ".sessions/MEMORY.md"));
+  await symlink(path.join(root, ".sessions/casual/MEMORY.md"), path.join(root, ".sessions/MEMORY.md"));
   const response = await call(client, "read", { name: "MEMORY.md" });
   expect(response.isError).toBe(true);
   expect(JSON.stringify(response)).not.toContain("private-marker");
-  expect(await readdir(path.join(root, ".sessions"))).toEqual(["casual"]);
+  expect(await readdir(path.join(root, ".sessions"))).toEqual(["MEMORY.md", "casual"]);
 });
 
 test("launcher validates arguments, explicit root, and keeps help/errors off stdout", async () => {

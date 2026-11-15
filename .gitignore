@@ -1,5 +1,6 @@
 .vscode/
 
+# Legacy shared fallback; canonical shared/private memory is under .sessions/.
 MEMORY.md
 .sessions/
 .env

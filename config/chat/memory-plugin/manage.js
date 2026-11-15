@@ -15,7 +15,7 @@ export async function migrate(root, { scopes = ["shared", "private"], dryRun = f
     // frontmatter is an error, never something to silently replace.
     for (const scope of scopes) {
       for (const name of [...await store.names(scope), "INDEX.md"]) {
-        const relative = store.relative(scope, name);
+        const relative = await store.source(scope, name);
         const original = await store.text(relative);
         if (!original) {
           try {
@@ -71,15 +71,21 @@ export async function migrate(root, { scopes = ["shared", "private"], dryRun = f
   return dryRun ? run() : store.locked(run);
 }
 
+export async function relocateShared(root, { dryRun = false } = {}) {
+  const store = new MemoryStore(root);
+  const run = () => store.relocateShared({ dryRun });
+  return dryRun ? run() : store.locked(run);
+}
+
 if (import.meta.main) {
   try {
     const [command, ...args] = process.argv.slice(2);
     if (command === "--help" || command === "-h") {
-      console.log("Usage: bun config/chat/memory-plugin/manage.js <migrate|reindex> [--root DIR] [--scope shared|private|both] [--dry-run]\nDefaults: root=current directory, scope=both. Migration backs up originals in each space's .backups/. Reindex writes only derived INDEX.md files.");
+      console.log("Usage: bun config/chat/memory-plugin/manage.js <migrate|reindex|relocate-shared> [--root DIR] [--scope shared|private|both] [--dry-run]\nDefaults: root=current directory, scope=both (relocate-shared: shared only). Migration adds metadata; relocate-shared moves root MEMORY.md byte-for-byte into .sessions/MEMORY.md with a verified backup. Reindex writes only derived INDEX.md files.");
     } else {
-      if (!["migrate", "reindex"].includes(command)) throw new Error("Choose migrate or reindex; use --help for usage.");
+      if (!["migrate", "reindex", "relocate-shared"].includes(command)) throw new Error("Choose migrate, reindex, or relocate-shared; use --help for usage.");
       let root = process.cwd();
-      let scope = "both";
+      let scope = command === "relocate-shared" ? "shared" : "both";
       let dryRun = false;
       for (let i = 0; i < args.length; i++) {
         const flag = args[i];
@@ -93,7 +99,10 @@ if (import.meta.main) {
       }
       if (!["shared", "private", "both"].includes(scope)) throw new Error("scope must be shared, private, or both.");
       const scopes = scope === "both" ? ["shared", "private"] : [scope];
-      if (command === "migrate") console.log(JSON.stringify(await migrate(root, { scopes, dryRun }), null, 2));
+      if (command === "relocate-shared") {
+        if (scope !== "shared") throw new Error("relocate-shared accepts only --scope shared.");
+        console.log(JSON.stringify(await relocateShared(root, { dryRun }), null, 2));
+      } else if (command === "migrate") console.log(JSON.stringify(await migrate(root, { scopes, dryRun }), null, 2));
       else {
         const store = new MemoryStore(root);
         if (dryRun) {

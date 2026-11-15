@@ -4,6 +4,7 @@
 /opencode.json
 /opencode.jsonc
 .sessions/
+# Legacy shared fallback (canonical memory is excluded with .sessions/).
 MEMORY.md
 tests/
 __pycache__/

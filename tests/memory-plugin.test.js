@@ -5,7 +5,7 @@ import path from "node:path";
 import plugin from "../config/chat/memory-plugin/index.js";
 import { MemoryStore } from "../config/chat/memory-plugin/store.js";
 import { decode, encode } from "../config/chat/memory-plugin/format.js";
-import { migrate } from "../config/chat/memory-plugin/manage.js";
+import { migrate, relocateShared } from "../config/chat/memory-plugin/manage.js";
 
 const directories = [];
 async function fixture() {
@@ -27,6 +27,102 @@ test("reviewing an empty workspace has no filesystem side effects", async () => 
   expect(result.spaces[0].memory.text).toBe("");
   expect(result.spaces[0].recent).toEqual([]);
   expect(await readdir(root)).toEqual([]);
+});
+
+test("shared relocation previews without side effects and preserves bytes, IDs and revisions", async () => {
+  const { root, store } = await fixture();
+  const original = encode({ schema_version: 1, id: "stable-memory", type: "long_term",
+    date: "2000-01-01", topic: "preferences", summary: "Original", created_at: "2000-01-01T00:00:00Z",
+    updated_at: "2000-01-01T00:00:00Z", custom: ["keep"] }, "# Memory\r\n中文 marker\r\n");
+  await writeFile(path.join(root, "MEMORY.md"), original);
+  const before = (await store.read("build", { name: "MEMORY.md" })).results[0];
+  expect((await store.recall("plan")).spaces[0].memory.revision).toBe(before.revision);
+  expect((await store.search("build", { query: "marker" })).matches).toBe(1);
+  expect((await relocateShared(root, { dryRun: true })).wouldMove).toBe(true);
+  expect(await readdir(root)).toEqual(["MEMORY.md"]);
+  const moved = await relocateShared(root);
+  expect(moved.moved).toBe(true);
+  expect(moved.sha256).toBe(before.revision);
+  expect(await readFile(path.join(root, moved.backup))).toEqual(Buffer.from(original));
+  expect(await readFile(path.join(root, moved.target))).toEqual(Buffer.from(original));
+  expect(await readdir(root)).toEqual([".sessions"]);
+  const manifest = JSON.parse(await readFile(path.join(root, path.dirname(moved.backup), "manifest.json"), "utf8"));
+  expect(manifest.files).toEqual([{ backup: "MEMORY.md", path: "MEMORY.md", sha256: before.revision }]);
+  expect((await store.read("build", { name: "MEMORY.md" })).results[0]).toEqual(before);
+  expect(await store.names("shared")).toEqual(["MEMORY.md"]);
+  expect(await store.entries("shared")).toEqual([]);
+  expect((await relocateShared(root)).moved).toBe(false);
+  expect(await readdir(path.join(root, ".sessions/.backups"))).toHaveLength(1);
+});
+
+test("legacy update validates revision before relocation, backs up, and retains metadata", async () => {
+  const { root, store } = await fixture();
+  await writeFile(path.join(root, "MEMORY.md"), "# Old\r\nmarker\r\n");
+  await migrate(root, { scopes: ["shared"] });
+  const original = await readFile(path.join(root, "MEMORY.md"), "utf8");
+  const before = (await store.read("build", { name: "MEMORY.md" })).results[0];
+  await expect(store.update("build", { content: "new", expectedRevision: "stale" })).rejects.toThrow("Memory changed");
+  expect(await readFile(path.join(root, "MEMORY.md"), "utf8")).toBe(original);
+  await store.update("build", { content: "# Updated", expectedRevision: before.revision });
+  const after = (await store.read("build", { name: "MEMORY.md" })).results[0];
+  expect(after.metadata.id).toBe(before.metadata.id);
+  expect(after.metadata.created_at).toBe(before.metadata.created_at);
+  const batch = (await readdir(path.join(root, ".sessions/.backups"))).find((name) => name.startsWith("relocate-"));
+  expect(await readFile(path.join(root, ".sessions/.backups", batch, "MEMORY.md"), "utf8")).toBe(original);
+  await expect(readFile(path.join(root, "MEMORY.md"))).rejects.toThrow();
+});
+
+test("dual shared paths conflict even when identical or empty, without overwriting either", async () => {
+  const { root, store } = await fixture();
+  await mkdir(path.join(root, ".sessions"));
+  for (const canonical of ["# Other", "# Legacy", ""]) {
+    await writeFile(path.join(root, "MEMORY.md"), "# Legacy");
+    await writeFile(path.join(root, ".sessions/MEMORY.md"), canonical);
+    await expect(store.recall("build")).rejects.toThrow("Shared memory conflict");
+    await expect(store.search("build", { query: "Legacy" })).rejects.toThrow("Shared memory conflict");
+    await expect(store.read("build", { name: "MEMORY.md" })).rejects.toThrow("Shared memory conflict");
+    await expect(store.update("build", { content: "overwrite", expectedRevision: "anything" })).rejects.toThrow("Shared memory conflict");
+    await expect(migrate(root, { scopes: ["shared"] })).rejects.toThrow("Shared memory conflict");
+    await expect(relocateShared(root, { dryRun: true })).rejects.toThrow("Shared memory conflict");
+    await expect(relocateShared(root)).rejects.toThrow("Shared memory conflict");
+    expect(await readFile(path.join(root, "MEMORY.md"), "utf8")).toBe("# Legacy");
+    expect(await readFile(path.join(root, ".sessions/MEMORY.md"), "utf8")).toBe(canonical);
+    expect(await readdir(path.join(root, ".sessions"))).toEqual(["MEMORY.md"]);
+  }
+});
+
+test("canonical metadata migration uses canonical manifest paths; relocation serializes", async () => {
+  const { root, store } = await fixture();
+  expect((await relocateShared(root, { dryRun: true })).moved).toBe(false);
+  expect(await readdir(root)).toEqual([]);
+  await writeFile(path.join(root, "MEMORY.md"), "# Legacy\r\n");
+  const results = await Promise.all([relocateShared(root), relocateShared(root)]);
+  expect(results.filter((result) => result.moved)).toHaveLength(1);
+  const report = await migrate(root, { scopes: ["shared"] });
+  const manifest = JSON.parse(await readFile(path.join(root, report.backups[0], "manifest.json"), "utf8"));
+  expect(manifest.files[0].path).toBe(".sessions/MEMORY.md");
+  expect(decode(await readFile(path.join(root, ".sessions/MEMORY.md"), "utf8")).body).toBe("# Legacy\r\n");
+  expect((await migrate(root, { scopes: ["shared"] })).files).toBe(0);
+  expect(await store.entries("shared")).toEqual([]);
+});
+
+test("relocation preserves source and backup if a destination appears after preflight", async () => {
+  const { root, store } = await fixture();
+  await writeFile(path.join(root, "MEMORY.md"), "original bytes\r\n");
+  const checked = store.checked.bind(store);
+  let checks = 0;
+  store.checked = async (relative) => {
+    const filename = await checked(relative);
+    if (relative === ".sessions/MEMORY.md" && ++checks === 2) {
+      await writeFile(filename, "external writer", { flag: "wx" });
+    }
+    return filename;
+  };
+  await expect(store.locked(() => store.relocateShared())).rejects.toThrow();
+  expect(await readFile(path.join(root, "MEMORY.md"), "utf8")).toBe("original bytes\r\n");
+  expect(await readFile(path.join(root, ".sessions/MEMORY.md"), "utf8")).toBe("external writer");
+  const [batch] = await readdir(path.join(root, ".sessions/.backups"));
+  expect(await readFile(path.join(root, ".sessions/.backups", batch, "MEMORY.md"), "utf8")).toBe("original bytes\r\n");
 });
 
 test("agent identity controls reads/writes, casual defaults private and explicit sharing works", async () => {
@@ -65,13 +161,13 @@ test("build writes shared memory and plan reads it, with private scopes and plan
       await expect(store.update(agent, { scope, share: true, content: "denied", expectedRevision: initial.revision })).rejects.toThrow();
     }
   }
-  const before = await readFile(path.join(root, "MEMORY.md"), "utf8");
+  const before = await readFile(path.join(root, ".sessions/MEMORY.md"), "utf8");
   const files = await readdir(path.join(root, ".sessions"));
   for (const scope of ["default", "shared", "private", "both"]) {
     await expect(store.record("plan", { ...input, scope, share: true }, "denied")).rejects.toThrow("read-only");
     await expect(store.update("plan", { scope, content: "denied", expectedRevision: initial.revision, share: true })).rejects.toThrow("read-only");
   }
-  expect(await readFile(path.join(root, "MEMORY.md"), "utf8")).toBe(before);
+  expect(await readFile(path.join(root, ".sessions/MEMORY.md"), "utf8")).toBe(before);
   expect(await readdir(path.join(root, ".sessions"))).toEqual(files);
 });
 
@@ -191,8 +287,8 @@ test("long-term updates preserve stable IDs and custom metadata", async () => {
   const { root, store } = await fixture();
   const first = (await store.read("serious", { name: "MEMORY.md" })).results[0];
   await store.update("serious", { content: "# Memory\nBefore", expectedRevision: first.revision });
-  const document = decode(await readFile(path.join(root, "MEMORY.md"), "utf8"));
-  await writeFile(path.join(root, "MEMORY.md"), encode({ ...document.metadata, tags: ["keep"] }, document.body));
+  const document = decode(await readFile(path.join(root, ".sessions/MEMORY.md"), "utf8"));
+  await writeFile(path.join(root, ".sessions/MEMORY.md"), encode({ ...document.metadata, tags: ["keep"] }, document.body));
   const current = (await store.read("serious", { name: "MEMORY.md" })).results[0];
   await store.update("serious", { content: "# Memory\nAfter", expectedRevision: current.revision });
   const updated = (await store.read("serious", { name: "MEMORY.md" })).results[0];

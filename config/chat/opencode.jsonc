@@ -33,6 +33,7 @@
     { "action": "edit", "resource": "*", "effect": "ask" },
     { "action": "edit", "resource": "projects/**", "effect": "allow" },
     { "action": "edit", "resource": "AGENTS.md", "effect": "allow" },
+    // Legacy root access supports backed-up relocation; canonical memory is in .sessions/.
     { "action": "edit", "resource": "MEMORY.md", "effect": "allow" },
     { "action": "edit", "resource": ".sessions/**", "effect": "allow" },
     { "action": "edit", "resource": ".sessions/casual/**", "effect": "deny" },

@@ -83,13 +83,13 @@ test("long-term JSON updates retain revisions and report conflicts on stderr", a
   const input = JSON.stringify({ content: "# Memory\nA lasting preference", expectedRevision: previous.revision });
   const updated = call(["update", "--input=-"], input);
   expect(updated.status).toBe(0);
-  const raw = await readFile(path.join(root, "MEMORY.md"), "utf8");
+  const raw = await readFile(path.join(root, ".sessions/MEMORY.md"), "utf8");
   expect(raw).toStartWith("---\n");
   const stale = call(["update", "--input=-"], input);
   expect(stale.status).toBe(1);
   expect(stale.stdout).toBe("");
   expect(JSON.parse(stale.stderr).error.message).toContain("Memory changed");
-  expect(await readFile(path.join(root, "MEMORY.md"), "utf8")).toBe(raw);
+  expect(await readFile(path.join(root, ".sessions/MEMORY.md"), "utf8")).toBe(raw);
 });
 
 test("invalid flags and JSON are rejected before any writes", async () => {

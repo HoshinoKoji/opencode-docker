@@ -44,11 +44,17 @@ export MEMORY_ROOT=/absolute/path/to/memory-workspace
 ```
 
 If the paths are unknown, ask for them. Do not guess a private memory location.
-The memory root contains shared `MEMORY.md` and `.sessions/`, with private memory
+The memory root contains shared `.sessions/MEMORY.md` and dated records in `.sessions/`, with private memory
 under `.sessions/casual/`. The CLI defaults to shared access. Space selection is
 caller-controlled, not authentication. Use private memory only when the user's
 workflow calls for it. Do not use this bridge to bypass a temporary/no-memory
 mode, harness permissions, or a request not to record.
+
+The logical CLI name stays `MEMORY.md`. Shared reads support legacy root
+`MEMORY.md`; dual paths raise a conflict. Long-term updates back up and relocate
+legacy shared memory before writing. For an explicit byte-preserving move, use
+`bun config/chat/memory-plugin/manage.js relocate-shared --root "$MEMORY_ROOT" --dry-run`
+from this repository, then omit `--dry-run` after reviewing the preview.
 
 ## Read
 

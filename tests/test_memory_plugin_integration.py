@@ -123,6 +123,7 @@ def test_chat_memory_plugin_loads_with_real_opencode(tmp_path):
                             ("memory_recall", "memory_search", "memory_read"))
                         assert matching[-1]["effect"] == ("allow" if allowed else "deny"), (name, action, resource)
             assert not (workspace / "MEMORY.md").exists()
+            assert not (workspace / ".sessions/MEMORY.md").exists()
             assert not (workspace / ".sessions").exists()
         finally:
             server.terminate()
