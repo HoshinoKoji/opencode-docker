@@ -19,3 +19,4 @@ config/chat/package.json
 config/chat/package-lock.json
 config/chat/bun.lock
 config/chat/.gitignore
+config/chat/memory-mcp/node_modules/
