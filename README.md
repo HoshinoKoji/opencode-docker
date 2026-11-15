@@ -163,21 +163,71 @@ Switch agents in the OpenCode interface:
 | `serious` (default) | Calm, direct discussion and tasks needing follow-up | Reads and writes shared memory in `MEMORY.md` and `.sessions/` |
 | `casual` | Relaxed, familiar conversation with light humor | May read shared memory; writes privately in `.sessions/casual/` by default |
 | `temp` | One-off questions and temporary conversations | Workspace memory and file/command tools are disabled |
+| `build` (built-in) | Coding and implementation | Reads and writes shared memory only |
+| `plan` (built-in) | Research and planning | Reads shared memory only; never records or updates it |
 
-- `serious` and `casual` review available memory when a session starts. When a
-  topic concludes, they save a record and retain useful enduring information.
+- `serious`, `casual`, `build`, and `plan` review available memory when a session starts.
+  When a topic concludes, `serious`, `casual`, and `build` save a record and retain useful enduring information.
   Say **“do not record”** to skip memory updates for that topic.
 - Ask `casual` explicitly to share information if it should enter shared memory.
-  `serious` does not access the private `casual` directory.
+  `serious`, `build`, and `plan` do not access the private `casual` directory.
 - Switching agents preserves the current conversation. Start a **new session**
   before switching to `temp` to isolate earlier context, or from `casual` to
-  `serious` when private content needs to remain isolated.
+  `serious`, `build`, or `plan` when private content needs to remain isolated.
 - `temp` disables workspace memory recording; OpenCode's own session
   persistence still applies.
 
 Agent definitions live in [`config/chat/`](config/chat/); memory procedures
 are in [`AGENTS.md`](AGENTS.md). These chat agents are loaded by this workspace.
 The reusable runtime provides neutral development defaults.
+
+### Memory Tools
+
+The chat profile includes a local, dependency-free OpenCode V2 plugin at
+[`config/chat/memory-plugin/`](config/chat/memory-plugin/). It keeps the existing
+Markdown files, adds YAML frontmatter for structured metadata, and provides five tools:
+
+| Tool | Purpose |
+| --- | --- |
+| `memory_recall` | Read long-term memory and five recent index entries |
+| `memory_search` | Find matching records with short snippets |
+| `memory_read` | Read a record or page through a long memory file |
+| `memory_record` | Save a topic record and update its index together |
+| `memory_update` | Update long-term memory with revision conflict detection |
+
+The host supplies the current agent identity. `serious` and `build` use shared memory;
+`casual` can read both spaces and writes privately by default. Explicit shared
+writes use `scope: "shared", share: true`. `plan` has read-only shared access,
+enforced by the store even for direct record/update calls. `temp`, `general`,
+and `explore` have no memory-tool access. Native V2 permission overrides enable
+`build` and `plan` while preserving their built-in coding prompts. `AGENTS.md`
+defines startup and task-conclusion procedures, including shared-only fallbacks
+and the prohibition on `plan` writing memory through CLI commands or file edits.
+The model still decides when and what to record, following your instructions;
+the plugin does not automatically collect conversations or call another model.
+
+Existing Markdown records work immediately, and manual edits are visible on
+the next read/search. The directory determines shared/private scope; stable IDs
+stay with records across edits and synchronization. `INDEX.md` is a generated
+view of the records and can be rebuilt; recall does not depend on a synced index.
+Search matches all whitespace-separated literal terms,
+case-insensitively, including Chinese text. There is no embedding service or
+database. Results are bounded; long reads can be paged. Writes use a shared
+filesystem lock and atomic file replacement; stale long-term revisions are
+rejected. New record names include a UTC date and a stable tool-call suffix.
+
+Restart the container once after updating the chat profile to copy the plugin
+into its writable configuration mirror. Its configured memory root is
+`/home/bun/workspace`; adjust the plugin's `options.root` in
+`config/chat/opencode.jsonc` for another workspace layout. The plugin is loaded
+only through the chat profile, and the agents retain a file-based fallback.
+See [Memory format and migration](#memory-format-and-migration) for the file
+schema, migration command, and backups.
+
+If a process crashes while writing, `.sessions/.memory-lock` can remain. Remove
+that directory only after confirming no memory writer is running, then retry.
+Agent-level tool restrictions organize memory access; ordinary filesystem
+access remains controlled separately by OpenCode permissions and mounts.
 
 ## Workspace, Mounts, and Data
 
@@ -437,16 +487,94 @@ are retained by Docker during upgrades and can be mounted explicitly.
   generated password, printed as `server password ...`; it changes on server
   restart. The personal workspace supplies its own Compose default.
 
+### Memory Format and Migration
+
+Memory uses Markdown with YAML frontmatter, parsed with Bun's built-in YAML
+support. For example:
+
+```markdown
+---
+schema_version: 1
+id: "record-unique-stable-id"
+type: "session"
+date: "2026-11-14"
+topic: "memory-storage"
+summary: "Use Markdown and YAML metadata for portable memory."
+created_at: "2026-11-14T13:00:00.000Z"
+updated_at: "2026-11-14T13:00:00.000Z"
+---
+# Memory storage
+
+## Details
+Discussion, decisions, and follow-up remain ordinary Markdown.
+```
+
+`type` is `session` for records or `long_term` for `MEMORY.md`. The fields shown
+are required; optional `preferences` contributes to the generated index. Other
+custom metadata is preserved during long-term updates. Quote dates and
+timestamps as strings, and preserve `id` when editing or moving a record.
+Shared/private scope comes from the directory rather than a YAML field.
+Duplicate session IDs within one space are reported as sync conflicts.
+
+Tool reads return `metadata` separately from the paginated Markdown body.
+`memory_update` accepts the body only and preserves metadata, updating
+`updated_at`. Revisions cover the complete on-disk file, including metadata.
+
+Run these from the repository root with Bun, or inside the container shell:
+
+```bash
+# Preview; does not change memory or create backups.
+bun config/chat/memory-plugin/manage.js migrate --dry-run
+
+# Back up and migrate shared and private files, preserving bodies and filenames.
+bun config/chat/memory-plugin/manage.js migrate
+
+# Recreate derived indexes after file synchronization or manual metadata edits.
+bun config/chat/memory-plugin/manage.js reindex
+```
+
+Both commands accept `--root DIR` and `--scope shared|private|both` (default:
+current directory, both spaces). Migration is repeatable: files that already
+have supported frontmatter are left untouched. It validates all selected files
+before writing. Legacy files without frontmatter remain readable, searchable,
+and indexable throughout the transition. Empty placeholder files are reported
+under `skippedEmpty` and left untouched; they are excluded from generated indexes.
+
+Each migration with changes first backs up original documents and indexes to
+`.sessions/.backups/<batch>/` and `.sessions/casual/.backups/<batch>/`, keeping
+private backups in the private space. Each backup's `manifest.json` records the
+original relative paths and SHA-256 checksums. To restore, stop memory writers
+and copy originals to those paths; shared `MEMORY.md` belongs at the workspace
+root. Backups are excluded from memory searches, Git, and image builds.
+
+Migration adds metadata without rewriting the existing body, including its old
+summary section. Session summaries/preferences are extracted from the English
+or Chinese template fields, with the title as a summary fallback. Legacy
+session timestamps use midnight UTC on the filename date and are marked
+`timestamp_source: legacy-date`; long-term files use their original modification
+time, marked `legacy-file-mtime`. These are migration approximations, not newly
+discovered historical creation times.
+
+For multi-device sync and backup, the authoritative files are `MEMORY.md` and
+the dated Markdown records in both spaces. Indexes are disposable derived data.
+Keep a backup copy separately if desired. Simultaneous edits to the same file
+still require normal sync-conflict resolution; local locks do not coordinate
+machines.
+
 ### Focused Checks
 
 Run the daemon-free version-smoke, configuration-mirror, and launcher checks:
 
 ```bash
 uv run --no-project --with pytest pytest tests -q
+bun test tests/memory-plugin.test.js
 sh -n start.sh
 sh -n docker/entrypoint.sh
 sh -n docker/smoke-tools.sh
 ```
+
+The Python suite also loads the chat memory plugin in an isolated real server
+when `opencode` is installed; that integration check is skipped otherwise.
 
 With Docker available, validate Compose as well:
 

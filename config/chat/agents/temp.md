@@ -2,6 +2,7 @@
 description: Temporary chat mode that neither reads nor writes workspace memory.
 mode: primary
 permission:
+  memory_*: deny
   read: deny
   edit: deny
   glob: deny

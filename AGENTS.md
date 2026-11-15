@@ -13,7 +13,7 @@ This repository publishes a general-purpose OpenCode runtime image and runs a pe
 - The base image contains Bun, uv, OpenCode, and common system tools. Bun and uv come from pinned official images; OpenCode V2 is installed globally with Bun into `/usr/local`. Node, Rust, and C/C++ toolchains are downstream extensions; copy the examples in `examples/`. The entrypoint retains writable `CARGO_HOME` support for Rust extensions, which can add their own Cargo volume.
 - The runtime image is published to `ghcr.io/hoshinokoji/opencode-runtime` for `linux/amd64` only, from manual runs or `runtime-v*` tags. No build uses an implicit `latest`.
 - The image entrypoint unifies `HOME`/XDG/`CARGO_HOME` around `OPENCODE_HOME`, owns the runtime-managed directories, drops root to `OPENCODE_UID`/`OPENCODE_GID` with `setpriv`, and execs the given command. Extension images and `Rscript` invocations are passed through unchanged.
-- Run focused checks with `uv run --no-project --with pytest pytest tests -q`; the manual/tag publish workflow also validates Compose and runs image smoke checks. Host credentials may be imported once from the read-only `/opt/opencode-auth-source` directory into writable instance state.
+- Run focused checks with `uv run --no-project --with pytest pytest tests -q` and `bun test tests/memory-plugin.test.js`. The Python suite checks real plugin loading when the OpenCode CLI is installed. The manual/tag publish workflow also validates Compose, runs image smoke checks, and runs the Bun memory tests inside the image. Host credentials may be imported once from the read-only `/opt/opencode-auth-source` directory into writable instance state.
 
 This project defines three switchable custom primary agents: `serious` (the default, writes to shared memory), `casual` (writes to its own private memory), and `temp` (temporary chat, with no memory access or recording). Each agent prompt defines its conversational style; this file defines memory file formats and procedures.
 
@@ -24,46 +24,62 @@ This project defines three switchable custom primary agents: `serious` (the defa
 
 ## Conversation memory workflow
 
-### File conventions
-- Shared memory (`serious` reads and writes; `casual` may read): `MEMORY.md`, `.sessions/YYYY-MM-DD-<topic>.md`, and `.sessions/INDEX.md`.
-- Private `casual` memory (read and written by `casual` among these three custom modes): `.sessions/casual/MEMORY.md`, `.sessions/casual/YYYY-MM-DD-<topic>.md`, and `.sessions/casual/INDEX.md`. `serious` does not access this subdirectory. Other agents, such as the built-in `build` agent, are not governed by these mode-specific conventions.
-- Use a short English or pinyin slug for each record's topic; if that slug is already used on the same day, choose another unique one. Put index entries in **reverse chronological order**, one per line: `date | topic | one-sentence conclusion | key preferences`. Keep only still-relevant entries in long-term memory; mark obsolete entries as “deprecated” in place rather than deleting them.
+### Memory plugin (`serious`, `casual`, `build`, and `plan`)
+- Prefer the chat-profile `memory_recall`, `memory_search`, `memory_read`, `memory_record`, and `memory_update` tools (Code Mode: `tools.memory.*`). The plugin uses the host's execution-context agent, not a model-supplied identity. `plan` can use only recall/search/read; `temp`, `general`, `explore`, and other agents cannot use these tools.
+- Call `recall` for the startup review, then `search`/`read` for relevant details. `record` saves Markdown with YAML frontmatter and rebuilds the index; do not also edit the index manually. It adds a stable call suffix to the topic slug to avoid collisions. Dates use UTC. Recall and INDEX reads derive their entries from records, so missing/stale indexes do not hide synced records.
+- Reads default to shared memory for `serious`, `build`, and `plan`, both spaces for `casual`; writes default to shared for `serious` and `build`, private for `casual`. `build` and `plan` use shared memory only. A `casual` shared write requires the user's explicit sharing request plus `scope: "shared", share: true`.
+- `plan` must never record, update, reindex, or otherwise write memory, including through CLI commands or direct file edits. Its file/CLI fallback is shared reads only. `build` must not access private memory through tools, CLI, or files.
+- Before `update`, read the complete `MEMORY.md` body (page through truncated results), merge enduring changes, and supply its `expectedRevision`. Tool reads return metadata separately; pass only the Markdown body to update. The plugin preserves the stable ID, creation time, and custom metadata. If a conflict occurs, read again and merge; do not blindly retry stale content. All content, consent, and mode-switching rules below still apply.
+- If these tools are unavailable, use the file workflow below. Markdown with YAML frontmatter is the source of truth; legacy plain Markdown remains readable. Keep IDs stable when editing/syncing. The containing directory defines shared/private scope. `.backups/` directories contain migration originals and are excluded from plugin recall/search.
 
-### At the start of each session (`serious` and `casual` only; proactively, without prompting)
-1. `serious` reads shared `MEMORY.md` and approximately the five most recent entries in `.sessions/INDEX.md`. `casual` also reads `.sessions/casual/MEMORY.md` and approximately the five most recent entries in `.sessions/casual/INDEX.md`. Skip files that do not exist.
-2. Open relevant past records for details. `serious` searches only shared memory; `casual` may search both spaces.
+### File conventions
+- Shared memory (`serious` and `build` read and write; `casual` and `plan` may read): `MEMORY.md`, `.sessions/YYYY-MM-DD-<topic>.md`, and `.sessions/INDEX.md`.
+- Private `casual` memory (read and written by `casual`): `.sessions/casual/MEMORY.md`, `.sessions/casual/YYYY-MM-DD-<topic>.md`, and `.sessions/casual/INDEX.md`. `serious`, `build`, and `plan` do not access this subdirectory.
+- Use a short English or pinyin slug for each record's topic; if that slug is already used on the same day, choose another unique one. YAML frontmatter stores `schema_version: 1`, stable `id`, `type` (`session` or `long_term`), `date`, `topic`, `summary`, `created_at`, and `updated_at`; `preferences` is optional. Quote dates/timestamps as strings. Keep substantive discussion in the Markdown body. Indexes are derived in **reverse chronological order**, one line per record: `date | filename topic | summary | preferences`; store lasting information in records, not only in INDEX.md. Keep only still-relevant entries in long-term memory; mark obsolete entries as “deprecated” in place rather than deleting them.
+
+### At the start of each session (`serious`, `casual`, `build`, and `plan`; proactively, without prompting)
+1. `serious`, `build`, and `plan` read shared `MEMORY.md` and approximately the five most recent entries in `.sessions/INDEX.md`. `casual` also reads `.sessions/casual/MEMORY.md` and approximately the five most recent entries in `.sessions/casual/INDEX.md`. Skip files that do not exist.
+2. Open relevant past records for details. `serious`, `build`, and `plan` search only shared memory; `casual` may search both spaces.
 3. Use the review to inform this session. When past memory conflicts with what the user says now, follow the user's current statement and update memory in the space this mode may write to. `casual` does not automatically update shared memory.
 
 ### Recording conversations
-- `serious`: by default, make one record in shared memory when each topic or task concludes; do not read or write `.sessions/casual/`.
+- `serious` and `build`: by default, make one record in shared memory when each topic or task concludes; do not read or write `.sessions/casual/`.
+- `plan`: use shared memory to inform planning and summarize conclusions in the response; never save a memory record or update memory.
 - `casual`: by default, make one record in its private memory when each topic or task concludes; write to shared memory only when the user explicitly asks to share specific information.
-- Neither mode needs to record every reply. If a topic is unfinished when switching topics or ending the session, record the current progress and open questions.
+- The writing agents (`serious`, `casual`, and `build`) need not record every reply. If a topic is unfinished when switching topics or ending the session, record the current progress and open questions.
 - `temp`: do not read or write either memory space, review past conversations, or retroactively record chats in this mode. To save a discussion, ask the user to switch to another mode and discuss what to record there.
 - To isolate previously loaded session context in `temp`, start a new session before switching to `temp`; changing agents within one session does not erase prior messages.
-- Likewise, start a new session when switching from `casual` to `serious` if private `casual` content needs to be isolated; tool permissions cannot erase earlier messages in the same session.
-- If the user explicitly says “do not record,” do not create a conversation record or update the index or long-term memory for that topic. Do not retroactively record `casual` conversations after switching to `serious`.
+- Likewise, start a new session when switching from `casual` to `serious`, `build`, or `plan` if private `casual` content needs to be isolated; tool permissions cannot erase earlier messages in the same session.
+- If the user explicitly says “do not record,” do not create a conversation record or update the index or long-term memory for that topic. Do not retroactively record `casual` conversations after switching to `serious` or `build`.
 
 When recording:
-1. Create `YYYY-MM-DD-<topic>.md` in the current mode's memory space using the template below: begin with a concise summary, then add details that make it possible to resume the discussion later.
-2. Prepend a new entry to `INDEX.md` in the same space.
+1. Create `YYYY-MM-DD-<topic>.md` in the current mode's memory space using the template below: a concise YAML summary followed by details that make it possible to resume the discussion later.
+2. Rebuild `INDEX.md` in the same space from the record metadata. The plugin does this automatically. Legacy records retain their original summary/body and can be indexed without migration.
 3. Merge only newly learned, enduring preferences or facts into that space's `MEMORY.md`. Organize `MEMORY.md` by coherent topics and rewrite existing bullets in place when state evolves; deduplicate and do not append dated fragments or turn it into a chronological log. Leave it untouched if there is nothing enduring to add. Exclude passwords, tokens, and other sensitive details that do not need to be retained.
 
 ### Conversation record template
 ```
+---
+schema_version: 1
+id: "<unique stable ID>"
+type: "session"
+date: "YYYY-MM-DD"
+topic: "<topic slug>"
+summary: "<one-sentence conclusion>"
+created_at: "<UTC ISO timestamp>"
+updated_at: "<UTC ISO timestamp>"
+preferences: "<optional key preferences>"
+---
 # <topic>
-## Summary
-- Date: YYYY-MM-DD
-- Goal:
-- Conclusion / deliverables:
-- Key decisions:
-- Next steps / open questions:
-- Preferences / context:
+## Goal
 
 ## Details
 - Background and request:
 - Discussion and progress:
 - Rationale and tradeoffs:
 - Outcome and follow-up:
+
+## Decisions and Next Steps
 ```
 
 ### Principles

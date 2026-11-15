@@ -1,0 +1,258 @@
+import { createHash, randomUUID } from "node:crypto";
+import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { decode, encode, legacyMetadata, oneLine } from "./format.js";
+
+const revision = (text) => createHash("sha256").update(text).digest("hex");
+const roots = { shared: "", private: ".sessions/casual" };
+const limitText = (text, limit) => ({ text: text.slice(0, limit), truncated: text.length > limit });
+
+export class MemoryStore {
+  constructor(root) {
+    this.root = path.resolve(root);
+  }
+
+  scopes(agent, scope = "default", writing = false, share = false) {
+    if (!["serious", "casual", "build", "plan"].includes(agent)) {
+      throw new Error("Memory tools are available only to serious, casual, build, and plan.");
+    }
+    if (agent === "plan" && writing) throw new Error("plan uses read-only shared memory.");
+    if (scope === "default") scope = agent === "casual" ? (writing ? "private" : "both") : "shared";
+    if (!["shared", "private", "both"].includes(scope)) throw new Error("Invalid memory scope.");
+    if (scope === "both" && writing) throw new Error("Write to one memory space at a time.");
+    if (agent !== "casual" && scope !== "shared") throw new Error(`${agent} uses shared memory only.`);
+    if (writing && agent === "casual" && scope === "shared" && !share) {
+      throw new Error("Shared writes from casual require share=true and an explicit user request to share.");
+    }
+    return scope === "both" ? ["shared", "private"] : [scope];
+  }
+
+  relative(scope, name) {
+    if (!(scope in roots)) throw new Error("Invalid memory scope.");
+    if (name === "MEMORY.md") return path.join(roots[scope], name);
+    if (name !== "INDEX.md" && !/^\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:-[a-z0-9]+)*\.md$/.test(name)) {
+      throw new Error("Use a memory filename returned by recall/search/record, without directories.");
+    }
+    return path.join(scope === "shared" ? ".sessions" : roots.private, name);
+  }
+
+  // Refuse symlinks instead of following memory paths into another location.
+  async checked(relative) {
+    let current = this.root;
+    for (const segment of relative.split(path.sep)) {
+      if (!segment) continue;
+      current = path.join(current, segment);
+      try {
+        if ((await lstat(current)).isSymbolicLink()) throw new Error(`Memory symlinks are unsupported: ${relative}`);
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
+    return current;
+  }
+
+  async text(relative) {
+    try {
+      return await readFile(await this.checked(relative), "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT") return "";
+      throw error;
+    }
+  }
+
+  async atomic(relative, text) {
+    const filename = await this.checked(relative);
+    await mkdir(path.dirname(filename), { recursive: true });
+    const temporary = `${filename}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, text, { flag: "wx", mode: 0o600 });
+      await rename(temporary, filename);
+    } finally {
+      await rm(temporary, { force: true });
+    }
+  }
+
+  async locked(fn) {
+    const directory = await this.checked(".sessions");
+    await mkdir(directory, { recursive: true });
+    const lock = path.join(directory, ".memory-lock");
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await mkdir(lock);
+        break;
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+        if (attempt >= 100) throw new Error("Memory is busy (.sessions/.memory-lock). Retry; after a crashed writer, remove the lock only once no writer is running.");
+        await delay(20);
+      }
+    }
+    try {
+      return await fn();
+    } finally {
+      await rm(lock, { recursive: true });
+    }
+  }
+
+  async recall(agent, { scope: requestedScope = "default" } = {}) {
+    const spaces = [];
+    for (const scope of this.scopes(agent, requestedScope)) {
+      const text = await this.text(this.relative(scope, "MEMORY.md"));
+      const document = decode(text);
+      const entries = await this.entries(scope);
+      spaces.push({
+        scope,
+        memory: { name: "MEMORY.md", metadata: document.metadata, revision: revision(text), ...limitText(document.body, 10000) },
+        recent: entries.slice(0, 5).map((entry) => this.indexLine(entry)),
+      });
+    }
+    return { spaces };
+  }
+
+  async names(scope) {
+    const directory = path.dirname(await this.checked(this.relative(scope, "INDEX.md")));
+    let entries = [];
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    return ["MEMORY.md", ...entries.filter((entry) => entry.isFile() &&
+      /^\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:-[a-z0-9]+)*\.md$/.test(entry.name)).map((entry) => entry.name).sort().reverse()];
+  }
+
+  async entries(scope) {
+    const entries = [];
+    const ids = new Set();
+    for (const name of (await this.names(scope)).filter((name) => name !== "MEMORY.md")) {
+      const raw = await this.text(this.relative(scope, name));
+      if (!raw) continue;
+      const document = decode(raw);
+      const metadata = document.metadata ?? legacyMetadata(scope, name, document.body);
+      if (metadata.type !== "session") throw new Error(`Expected session metadata in ${name}.`);
+      if (ids.has(metadata.id)) throw new Error(`Duplicate memory ID in ${scope}: ${metadata.id}. Resolve the synced file conflict first.`);
+      ids.add(metadata.id);
+      entries.push({ name, metadata });
+    }
+    return entries.sort((a, b) => b.metadata.date.localeCompare(a.metadata.date) ||
+      b.metadata.created_at.localeCompare(a.metadata.created_at) || b.name.localeCompare(a.name));
+  }
+
+  indexLine({ name, metadata }) {
+    return `${metadata.date} | ${name.slice(11, -3)} | ${oneLine(metadata.summary)} | ${oneLine(metadata.preferences)}`;
+  }
+
+  async indexText(scope) {
+    const entries = await this.entries(scope);
+    return `# Memory index\n\n<!-- Generated from record metadata; edit the records, then rebuild. -->\n\n${entries.map((entry) => this.indexLine(entry)).join("\n")}\n`;
+  }
+
+  // Call under locked() when persisting; reads render the same index on demand.
+  async rebuild(scope) {
+    const content = await this.indexText(scope);
+    const relative = this.relative(scope, "INDEX.md");
+    if (await this.text(relative) !== content) await this.atomic(relative, content);
+    return relative;
+  }
+
+  async search(agent, { query, scope = "default", limit = 8 }) {
+    const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    if (!terms.length || query.length > 500) throw new Error("Provide a non-empty query of at most 500 characters.");
+    if (!Number.isInteger(limit) || limit < 1 || limit > 20) throw new Error("limit must be between 1 and 20.");
+    const results = [];
+    for (const space of this.scopes(agent, scope)) {
+      for (const name of await this.names(space)) {
+        const raw = await this.text(this.relative(space, name));
+        const document = decode(raw);
+        const text = `${document.metadata ? `${document.metadata.topic}\n${document.metadata.summary}\n` : ""}${document.body}`;
+        const lower = text.toLocaleLowerCase();
+        if (!terms.every((term) => lower.includes(term))) continue;
+        const first = Math.min(...terms.map((term) => lower.indexOf(term)));
+        const start = Math.max(0, first - 120);
+        results.push({ scope: space, name, metadata: document.metadata, snippet: text.slice(start, start + 700) });
+      }
+    }
+    return { matches: results.length, results: results.slice(0, limit) };
+  }
+
+  async read(agent, { name, scope = "default", offset = 0, limit = 12000 }) {
+    const spaces = this.scopes(agent, scope);
+    if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 20000) {
+      throw new Error("offset must be nonnegative; limit must be between 1 and 20000.");
+    }
+    const results = [];
+    for (const space of spaces) {
+      const raw = name === "INDEX.md" ? await this.indexText(space) : await this.text(this.relative(space, name));
+      const document = decode(raw);
+      results.push({ scope: space, name, metadata: document.metadata, revision: revision(raw), offset,
+        ...limitText(document.body.slice(offset), limit), total: document.body.length });
+    }
+    return { results };
+  }
+
+  async record(agent, input, callKey) {
+    const [scope] = this.scopes(agent, input.scope, true, input.share === true);
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(input.topic) || input.topic.length > 80) {
+      throw new Error("topic must be a short English/pinyin slug, at most 80 characters.");
+    }
+    for (const key of ["goal", "conclusion", "details"]) {
+      if (typeof input[key] !== "string" || !input[key].trim()) throw new Error(`${key} must be non-empty.`);
+    }
+    if (JSON.stringify(input).length > 100000) throw new Error("Record is too large; keep it under 100000 characters.");
+    const now = new Date().toISOString();
+    const date = now.slice(0, 10);
+    // A stable call suffix makes retries idempotent and avoids same-day clashes.
+    const topic = `${input.topic}-${revision(callKey).slice(0, 12)}`;
+    const name = `${date}-${topic}.md`;
+    const body = [`# ${input.topic}`, `## Goal\n${input.goal.trim()}`, `## Details\n${input.details.trim()}`,
+      input.decisions && `## Decisions\n${input.decisions.trim()}`,
+      input.nextSteps && `## Next steps\n${input.nextSteps.trim()}`].filter(Boolean).join("\n\n") + "\n";
+    const metadata = {
+      schema_version: 1, id: `record-${revision(`${scope}:${callKey}:${input.topic}`).slice(0, 32)}`,
+      type: "session", date, topic: input.topic, summary: input.conclusion.trim(),
+      created_at: now, updated_at: now,
+      ...(input.preferences ? { preferences: input.preferences.trim() } : {}),
+    };
+    return this.locked(async () => {
+      // Find a previous call by its stable ID, including retries on a later UTC
+      // day or after a file rename. Reuse its original filename and timestamps.
+      const prior = (await this.entries(scope)).find((entry) => entry.metadata.id === metadata.id);
+      const savedName = prior?.name ?? name;
+      const relative = this.relative(scope, savedName);
+      const existing = await this.text(relative);
+      const previous = decode(existing);
+      // Reuse timestamps on an identical retry; preserve additional metadata.
+      const content = encode({ ...metadata, ...previous.metadata }, body);
+      if (existing && (previous.body !== body || previous.metadata?.summary !== metadata.summary ||
+          (previous.metadata?.preferences ?? "") !== (metadata.preferences ?? ""))) {
+        throw new Error("This call already saved different content; read the existing record before retrying.");
+      }
+      if (!existing) await this.atomic(relative, content);
+      await this.rebuild(scope);
+      return { scope, name: savedName, path: relative, id: previous.metadata?.id ?? metadata.id, revision: revision(existing || content) };
+    });
+  }
+
+  async update(agent, { content, expectedRevision, scope = "default", share = false }) {
+    const [space] = this.scopes(agent, scope, true, share === true);
+    if (typeof content !== "string" || !content.trim() || content.length > 100000) {
+      throw new Error("Long-term memory must be non-empty and at most 100000 characters.");
+    }
+    return this.locked(async () => {
+      const relative = this.relative(space, "MEMORY.md");
+      const previous = await this.text(relative);
+      if (revision(previous) !== expectedRevision) throw new Error("Memory changed since it was read. Read MEMORY.md again and merge your changes.");
+      const document = decode(previous);
+      if (decode(content).metadata) throw new Error("Pass only the Markdown body to update; the plugin preserves metadata automatically.");
+      const now = new Date().toISOString();
+      const metadata = document.metadata ?? {
+        schema_version: 1, id: `memory-${randomUUID()}`, type: "long_term", date: now.slice(0, 10),
+        topic: "long-term-memory", summary: "Long-term preferences and context", created_at: now,
+      };
+      if (metadata.type !== "long_term") throw new Error("MEMORY.md must have long_term metadata.");
+      const text = encode({ ...metadata, updated_at: now }, `${content.trim()}\n`);
+      await this.atomic(relative, text);
+      return { scope: space, name: "MEMORY.md", revision: revision(text) };
+    });
+  }
+}

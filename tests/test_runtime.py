@@ -109,6 +109,8 @@ def test_chat_profile_keeps_the_shared_global_preferences(tmp_path):
     assert json.loads((mirror / "opencode.jsonc").read_text())["model"] == "provider/shared"
     assert result.stdout == str(mirror / ".runtime-profile/opencode.jsonc")
     assert (mirror / "agents/serious.md").is_file()
+    assert (mirror / ".runtime-profile/memory-plugin/index.js").is_file()
+    assert (mirror / ".runtime-profile/memory-plugin/store.js").is_file()
 
     run_entrypoint(home, source, "true")
     assert not (mirror / "agents/serious.md").exists()

@@ -3,27 +3,45 @@
   // Chat profile: the personal workspace loads this explicitly. It is not the
   // runtime's global default, so development projects keep neutral behavior.
   "default_agent": "serious",
-  "permission": {
-    "read": {
-      "projects/**": "allow",
-      ".sessions/casual/**": "deny"
+  "plugins": [
+    {
+      "package": "./memory-plugin",
+      "options": { "root": "/home/bun/workspace" }
+    }
+  ],
+  // Keep the built-in coding prompts; workspace memory procedures live in AGENTS.md.
+  "agents": {
+    "build": {
+      "permissions": [
+        { "action": "memory_*", "resource": "shared", "effect": "allow" }
+      ]
     },
-    "edit": {
-      "*": "ask",
-      "projects/**": "allow",
-      "AGENTS.md": "allow",
-      "MEMORY.md": "allow",
-      ".sessions/**": "allow",
-      ".sessions/casual/**": "deny"
-    },
-    "bash": {
-      "*": "ask",
-      "git diff": "allow",
-      "git log *": "allow",
-      "git status *": "allow",
-      "git show *": "allow",
-      "git worktree list": "allow"
-    },
-    "question": "allow"
-  }
+    "plan": {
+      "permissions": [
+        { "action": "memory_recall", "resource": "shared", "effect": "allow" },
+        { "action": "memory_search", "resource": "shared", "effect": "allow" },
+        { "action": "memory_read", "resource": "shared", "effect": "allow" },
+        { "action": "memory_record", "resource": "*", "effect": "deny" },
+        { "action": "memory_update", "resource": "*", "effect": "deny" }
+      ]
+    }
+  },
+  "permissions": [
+    { "action": "memory_*", "resource": "*", "effect": "deny" },
+    { "action": "read", "resource": "projects/**", "effect": "allow" },
+    { "action": "read", "resource": ".sessions/casual/**", "effect": "deny" },
+    { "action": "edit", "resource": "*", "effect": "ask" },
+    { "action": "edit", "resource": "projects/**", "effect": "allow" },
+    { "action": "edit", "resource": "AGENTS.md", "effect": "allow" },
+    { "action": "edit", "resource": "MEMORY.md", "effect": "allow" },
+    { "action": "edit", "resource": ".sessions/**", "effect": "allow" },
+    { "action": "edit", "resource": ".sessions/casual/**", "effect": "deny" },
+    { "action": "shell", "resource": "*", "effect": "ask" },
+    { "action": "shell", "resource": "git diff", "effect": "allow" },
+    { "action": "shell", "resource": "git log *", "effect": "allow" },
+    { "action": "shell", "resource": "git status *", "effect": "allow" },
+    { "action": "shell", "resource": "git show *", "effect": "allow" },
+    { "action": "shell", "resource": "git worktree list", "effect": "allow" },
+    { "action": "question", "resource": "*", "effect": "allow" }
+  ]
 }

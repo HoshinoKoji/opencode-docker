@@ -137,6 +137,12 @@ jobs:
           result=$(docker run --rm "${SMOKE_IMAGE}" sh -c 'printf "%s-%s\n" "$1" "$2"' sh alpha beta)
           test "$result" = "alpha-beta"
 
+      - name: Test the chat memory plugin
+        run: |
+          docker run --rm \
+            -v "$PWD:/opt/runtime-source:ro" \
+            "${SMOKE_IMAGE}" bun test /opt/runtime-source/tests/memory-plugin.test.js
+
       - name: Smoke test the neutral default configuration
         run: |
           set -eu
