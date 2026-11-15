@@ -1,6 +1,8 @@
 .git/
 .env
 /compose.override.yaml
+/opencode.json
+/opencode.jsonc
 .sessions/
 MEMORY.md
 tests/

@@ -139,6 +139,33 @@ Source edits and deletions take effect after restarting the container:
 docker compose restart opencode
 ```
 
+### Personal Workspace Preferences
+
+Use the root `opencode.jsonc` for local OpenCode preferences. On a fresh checkout,
+create it from the tracked template (keep your existing file if you have one):
+
+```bash
+cp opencode.example.jsonc opencode.jsonc
+```
+
+Uncomment `model` or `default_agent` in the template as needed, choosing a model
+available in your instance. Both root `opencode.jsonc` and `opencode.json` are
+Git-ignored and excluded from image builds; `opencode.example.jsonc` is shared.
+
+OpenCode merges these settings natively. Ordinary settings apply in this order,
+from lower to higher precedence: shared global configuration → chat profile
+(`OPENCODE_CONFIG`) → discovered project configuration. The root file applies
+to this workspace and its descendants, including projects opened beneath it.
+Closer direct project configs override ancestor direct configs; discovered
+`.opencode/opencode.json(c)` files are then applied with higher precedence than
+all direct configs. Managed settings and policies have their own precedence
+rules; see the [V2 config guide](https://opencode.ai/v2/docs/config).
+
+The workspace root is already bind-mounted at `/home/bun/workspace`. Edits to
+this local config reload natively after saving, without a container restart;
+use `/reload` to force a full reload. Shared source configuration still follows
+the copy-on-start workflow above.
+
 ### Git Commit Identity
 
 The launcher reads the host's global Git identity and passes it into the

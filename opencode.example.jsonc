@@ -1,0 +1,8 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // Copy to opencode.jsonc for personal workspace preferences (Git-ignored).
+  // Uncomment only the settings you want to override.
+  // Choose a provider/model available in your OpenCode instance.
+  // "model": "anthropic/claude-sonnet-5-5",
+  // "default_agent": "serious",
+}

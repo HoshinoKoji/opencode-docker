@@ -4,6 +4,8 @@ MEMORY.md
 .sessions/
 .env
 /compose.override.yaml
+/opencode.json
+/opencode.jsonc
 projects/
 __pycache__/
 .pytest_cache/
