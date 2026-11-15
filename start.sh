@@ -11,6 +11,8 @@ repeated flags are applied in order (last wins).
   -h, --help                Show this help without starting anything
   --build                  Build from source before starting (default: off)
   --no-build               Disable source building
+  --pull                   Always pull the runtime image (default)
+  --no-pull                Never pull the runtime image (use cached image)
   --proxy URL              Set both HTTP and HTTPS proxies
   --http-proxy URL         Set OPENCODE_HTTP_PROXY
   --https-proxy URL        Set OPENCODE_HTTPS_PROXY
@@ -18,7 +20,7 @@ repeated flags are applied in order (last wins).
   --disable-proxy          Clear all build/container proxy variables
   --port PORT              Set OPENCODE_PORT (default: 14096)
   --bind ADDRESS           Set OPENCODE_BIND_ADDRESS (default: 0.0.0.0)
-  --image IMAGE            Set OPENCODE_IMAGE (default: runtime:0.2.4;
+  --image IMAGE            Set OPENCODE_IMAGE (default: runtime:latest;
                            source builds use runtime:local)
   --config-source DIR      Set OPENCODE_CONFIG_SOURCE (default: host
                            ~/.config/opencode if present, else config/opencode)
@@ -27,6 +29,7 @@ repeated flags are applied in order (last wins).
 Value flags accept --flag VALUE or --flag=VALUE. Proxy values may be empty.
 Relative source paths are resolved against this repository.
 Use -- before Docker Compose up options or service names.
+Source builds start with --no-build --pull never, regardless of pull flags.
 
 Environment settings:
   HTTP/HTTPS proxies: OPENCODE_HTTP_PROXY / OPENCODE_HTTPS_PROXY, then
@@ -51,12 +54,15 @@ fail() {
 }
 
 build=false
+pull_policy=always
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -h|--help) usage; exit 0 ;;
         --) shift; break ;;
         --build|--build=true) build=true; shift; continue ;;
         --no-build|--build=false) build=false; shift; continue ;;
+        --pull) pull_policy=always; shift; continue ;;
+        --no-pull) pull_policy=never; shift; continue ;;
         --disable-proxy)
             export OPENCODE_HTTP_PROXY= OPENCODE_HTTPS_PROXY=
             export HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= NO_PROXY=
@@ -164,9 +170,9 @@ if [ "$build" = true ]; then
     trap - EXIT HUP INT TERM
 
     # Only arguments following -- remain, with their quoting preserved.
-    compose_local up -d --no-build "$@"
+    compose_local up -d --no-build --pull never "$@"
     exit
 fi
 
 # No explicit files: Compose discovers compose.yaml and compose.override.yaml.
-exec docker compose --project-directory "$workspace" up -d "$@"
+exec docker compose --project-directory "$workspace" up -d --pull "$pull_policy" "$@"

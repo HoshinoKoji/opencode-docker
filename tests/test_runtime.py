@@ -216,9 +216,9 @@ def test_launcher_keeps_overrides_versions_and_paths_with_spaces(
             "target": {"opencode": {"context": "resolved-context"}},
         }
         assert not Path(calls[1][3]).exists()
-        assert calls[2] == prefix + ["up", "-d", "--no-build"]
+        assert calls[2] == prefix + ["up", "-d", "--no-build", "--pull", "never"]
     else:
-        assert calls == [prefix + ["up", "-d"]]
+        assert calls == [prefix + ["up", "-d", "--pull", "always"]]
         assert not bake_log.exists()
     assert not list(temporary.iterdir())
     assert versions_log.read_text().splitlines() == [
@@ -248,7 +248,7 @@ def test_launcher_build_consumes_switch_and_keeps_up_arguments(launcher_workspac
         cwd=tmp_path, env=env, check=True,
     )
     calls = launcher_calls(args_log)
-    assert calls[-1][-7:] == ["up", "-d", "--no-build", "--wait", "--timeout", "60", "opencode"]
+    assert calls[-1][-9:] == ["up", "-d", "--no-build", "--pull", "never", "--wait", "--timeout", "60", "opencode"]
     assert "--build=true" not in calls[-1]
 
 
@@ -339,6 +339,36 @@ def test_launcher_defaults_leave_dotenv_overrides_to_compose(launcher_workspace)
     assert settings["OPENCODE_IMAGE"] == "<unset>"
     assert versions_log.read_text().splitlines()[-1] == str(host_config)
     assert len(launcher_calls(args_log)) == 1
+
+
+@pytest.mark.parametrize("flags,policy", [
+    ([], "always"), (["--no-pull"], "never"), (["--pull"], "always"),
+    (["--no-pull", "--pull"], "always"),
+    (["--pull", "--no-pull"], "never"),
+])
+@pytest.mark.parametrize("build", [False, True])
+def test_launcher_pull_policy(launcher_workspace, flags, policy, build):
+    workspace, env, args_log, versions_log, _, _ = launcher_workspace
+    env["OPENCODE_IMAGE"] = "custom:cached"
+    subprocess.run(
+        ["sh", str(workspace / "start.sh"), *(["--build"] if build else []),
+         *flags, "--", "--timeout", "60", "service with spaces"],
+        env=env, check=True,
+    )
+    call = launcher_calls(args_log)[-1]
+    assert call[call.index("up"):] == [
+        "up", "-d", *(["--no-build"] if build else []),
+        "--pull", "never" if build else policy,
+        "--timeout", "60", "service with spaces",
+    ]
+    settings = dict(line.split("=", 1) for line in Path(f"{versions_log}.env").read_text().splitlines())
+    assert settings["OPENCODE_IMAGE"] == "custom:cached"
+
+
+def test_compose_image_defaults_keep_environment_interpolation():
+    for name in ("compose.yaml", "compose.runtime.yaml"):
+        assert "image: ${OPENCODE_IMAGE:-ghcr.io/hoshinokoji/opencode-runtime:latest}" in (ROOT / name).read_text()
+    assert "image: ${OPENCODE_IMAGE:-ghcr.io/hoshinokoji/opencode-runtime:local}" in (ROOT / "compose.build.yaml").read_text()
 
 
 def test_launcher_accepts_explicit_empty_proxy_values(launcher_workspace):

@@ -49,11 +49,18 @@ docker compose down
 Session and authentication data live in persistent Docker volumes and survive
 ordinary `docker compose down` and container recreation.
 
-> **Current default:** `./start.sh` uses
-> `ghcr.io/hoshinokoji/opencode-runtime:0.2.4`, pulling it if needed. This release
-> contains OpenCode `2.2.5` and the previous full toolchain. The slim runtime
-> described in the developer guide is available through source builds until
-> the next release.
+`./start.sh` defaults to `ghcr.io/hoshinokoji/opencode-runtime:latest` and
+pulls on every start. `latest` follows the last successfully published stable
+release. To start offline with an already-cached image:
+
+```bash
+./start.sh --no-pull
+```
+
+> **Migration:** `latest` has not yet been published. This checkout cannot create
+> the registry tag; a successful stable release publish is required first.
+> Until then, use `./start.sh --image ghcr.io/hoshinokoji/opencode-runtime:0.2.4`
+> (add `--no-pull` if cached/offline), or `./start.sh --build` for the slim runtime.
 
 ## Everyday Settings
 
@@ -74,6 +81,7 @@ ordinary `docker compose down` and container recreation.
 | `--config-source DIR` | Shared configuration source |
 | `--skills-source DIR` | Shared skills source; default `config/skills` |
 | `--image IMAGE` | Runtime image to use |
+| `--pull`, `--no-pull` | Always pull (default), or never pull and use the cached image; last flag wins |
 | `--build`, `--no-build` | Enable or disable a source build before startup |
 
 Flags override environment and Compose `.env` settings. Both `--flag VALUE`
@@ -346,7 +354,9 @@ Local builds require Buildx and Compose support for `build.entitlements` and
 
 This builds `ghcr.io/hoshinokoji/opencode-runtime:local` and starts it after a
 successful build. Use `--image` to choose another tag. Put the launcher's
-`--build` before any `--` separator.
+`--build` before any `--` separator. Build startup always uses `--no-build
+--pull never`, regardless of launcher pull flags, so it runs the loaded local
+result. BuildKit may still download pinned build dependencies.
 
 #### Tool Versions
 
@@ -381,7 +391,7 @@ validate every existing session migration or host configuration.
 The launcher exports the resolved Bake definition with
 `docker compose build --print`, then runs Buildx with `--allow=network.host`,
 repository-scoped `fs.read`, and `--load`. It then starts Compose with
-`--no-build`. Compose resolves version pins, proxy arguments, and overrides.
+`--no-build --pull never`. Compose resolves version pins, proxy arguments, and overrides.
 
 This works around Compose v5.6.0's missing host-network grant forwarding.
 That release does not read `COMPOSE_BAKE`; declaring `build.entitlements`
@@ -864,6 +874,14 @@ The workflow builds once with version and commit-qualified tags, plus OCI
 source/revision/version labels. It validates Compose and shell syntax, runs
 tests and image smoke checks, and pushes that exact tested image. Publishes
 are serialized and existing version tags cannot be overwritten.
+
+Versions must be strict `X.Y.Z` SemVer, optionally with a prerelease suffix
+such as `-rc.1`; build metadata (`+...`) is unsupported in Docker tags.
+`latest` and `local` are reserved and rejected as release inputs. After all
+checks and both versioned pushes succeed, stable releases also update `latest`.
+Prereleases never update it. `latest` means the last successfully published
+stable release in publish order, not the highest version: publishing an older
+stable version moves it backward. Choose release order accordingly.
 
 A first published GHCR package is private by default. For anonymous pulls, set
 its visibility to **Public** in the
