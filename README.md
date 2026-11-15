@@ -658,6 +658,95 @@ instructions. Configure `MEMORY_CLI` and `MEMORY_ROOT` alongside it. It describe
 when to recall/record, how to page reads, and how to preserve user recording
 preferences. The skill is opt-in and is not added to neutral runtime defaults.
 
+### Antigravity and Other MCP Clients
+
+[`memory-mcp.sh`](memory-mcp.sh) exposes the same `MemoryStore` as a local stdio
+MCP server. Install its separate, pinned dependencies once from this checkout:
+
+```bash
+bun install --cwd config/chat/memory-mcp --frozen-lockfile
+./memory-mcp.sh --help
+```
+
+The bridge requires Bun with built-in YAML support on the **client's machine**,
+and a locally accessible checkout and memory directory. Bun must be on the MCP
+client process's `PATH`. The launcher never installs dependencies or accesses the
+network at startup. Its package and lockfile are isolated under
+`config/chat/memory-mcp/`; the OpenCode plugin keeps its dependency-free runtime.
+
+In Antigravity IDE, open **… → MCP Servers → Manage MCP Servers → View raw
+config**, and merge this entry into `mcpServers` (replace the absolute paths):
+
+```json
+{
+  "mcpServers": {
+    "workspace-memory": {
+      "command": "/absolute/path/to/opencode-docker/memory-mcp.sh",
+      "args": ["--space", "shared"],
+      "env": {
+        "MEMORY_ROOT": "/absolute/path/to/memory-workspace"
+      }
+    }
+  }
+}
+```
+
+The current official Antigravity docs list `~/.gemini/config/mcp_config.json`
+for global configuration and `.agents/mcp_config.json` for workspace
+configuration. The App exposes its config location through **Customizations →
+Installed → MCP Servers → Copy Config File Path**. Reload/restart the server
+through the client's MCP manager after changing startup policy. This integration
+is tested with the official SDK client over stdio. The workspace user also
+reported testing the Antigravity integration successfully in November 2026.
+
+Policy is fixed when the process starts:
+
+| Startup option | Reads | Writes |
+| --- | --- | --- |
+| Default / `--space shared` | Shared only | Shared only |
+| `--space private` | Private only | Private only |
+| `--space both` | Both by default; optional narrower `scope` | Explicit `scope: "shared"` or `"private"` required |
+| `--read-only` | Within configured space | Hidden from tool discovery and denied |
+
+`--root DIR` takes precedence over `MEMORY_ROOT`, as with the CLI. The MCP
+bridge requires one of these explicitly to avoid using an IDE's unexpected
+working directory; the directory must already exist. Relative roots resolve
+against the client-selected working directory. `--root=DIR` and `--space=VALUE`
+also work. Unknown flags and positional arguments fail with exit 2.
+
+Tools are `memory_recall`, `memory_search`, `memory_read`, `memory_record`, and
+`memory_update`. Arguments use the CLI's JSON field names plus optional `scope`.
+`memory_record` **requires `requestId`**: choose a unique, non-secret ID before
+the first call and reuse it with identical content on retries, including lost
+responses. `memory_read` accepts `name`, `offset`, and `limit` (up to 20000
+characters), returning `total`, `truncated`, metadata, and `revision` separately.
+Read every page before `memory_update`; send the complete merged body as
+`content` and its `expectedRevision`. If a revision changes during paging or
+update, read again and merge. Search takes `query` and optional `limit` (1–20),
+returning total matches and a bounded result list. Recall returns five recent
+entries per space. Tool results include JSON text and `structuredContent`;
+operation errors set `isError`. Stdout carries only MCP messages; startup errors
+and help go to stderr.
+
+External MCP has **no harness-agent authentication**. The startup options define
+the allowed access for every client connected to that process; a tool argument
+cannot broaden it. The adapter uses the store's file locks, revisions, metadata,
+symlink checks, and generated indexes without supplying an OpenCode agent
+identity. Each harness must still enforce its own plan/read-only, temp/no-memory,
+and user recording-consent rules. Configure `--read-only` for read-only contexts;
+disable the server entirely in no-memory contexts. Client-side tool hiding alone
+does not enforce read-only access. Direct filesystem access is governed by the
+host's own permissions.
+
+Official references (checked November 2026):
+- [Antigravity custom MCP setup and stdio configuration](https://antigravity.google/docs/mcp)
+- [MCP TypeScript SDK v2](https://ts.sdk.modelcontextprotocol.io/v2/),
+  [stdio server](https://ts.sdk.modelcontextprotocol.io/v2/serving/stdio.html), and
+  [client connection](https://ts.sdk.modelcontextprotocol.io/v2/clients/connect.html)
+- Pinned official packages: [server 2.4.0](https://registry.npmjs.org/@modelcontextprotocol/server/2.4.0)
+  and [client 2.4.0](https://registry.npmjs.org/@modelcontextprotocol/client/2.4.0).
+  The older `@modelcontextprotocol/sdk` package is the v1 maintenance line.
+
 ### Focused Checks
 
 Run the daemon-free version-smoke, configuration-mirror, and launcher checks:
@@ -665,14 +754,21 @@ Run the daemon-free version-smoke, configuration-mirror, and launcher checks:
 ```bash
 uv run --no-project --with pytest pytest tests -q
 bun test tests/memory-plugin.test.js tests/memory-cli.test.js
+bun install --cwd config/chat/memory-mcp --frozen-lockfile
+bun test ./config/chat/memory-mcp/server.test.js
 sh -n start.sh
 sh -n memory.sh
+sh -n memory-mcp.sh
 sh -n docker/entrypoint.sh
 sh -n docker/smoke-tools.sh
 ```
 
 The Python suite also loads the chat memory plugin in an isolated real server
 when `opencode` is installed; that integration check is skipped otherwise.
+The MCP suite starts real stdio child processes and uses the official client for
+initialization, tool discovery/calls, scope isolation, read-only enforcement,
+strict inputs, pagination, revision conflicts, and stable retry IDs. Its fixtures
+are temporary directories, independent of workspace memory.
 
 With Docker available, validate Compose as well:
 

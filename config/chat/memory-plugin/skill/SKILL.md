@@ -1,12 +1,38 @@
 ---
 name: workspace-memory
-description: Use when the user asks to recall or save persistent workspace memory through a shell-capable harness, or explicitly enables this memory workflow. Provides a portable CLI for Markdown and YAML memory.
+description: Use when the user asks to recall or save persistent workspace memory through the workspace memory CLI or MCP bridge, or explicitly enables this workflow. Provides portable access to Markdown and YAML memory.
 ---
 
-# Workspace Memory CLI
+# Workspace Memory
 
 Use the existing OpenCode memory tools when available. In another harness, use
 the standalone CLI. It needs Bun, not an OpenCode server or an LLM service.
+When the workspace-memory MCP server is configured, its `memory_recall`,
+`memory_search`, `memory_read`, `memory_record`, and `memory_update` tools provide
+the same storage workflow directly.
+
+## MCP bridge
+
+The operator installs dependencies once with
+`bun install --cwd /absolute/path/to/opencode-docker/config/chat/memory-mcp --frozen-lockfile`
+and configures the client's stdio command as
+`/absolute/path/to/opencode-docker/memory-mcp.sh`, with `MEMORY_ROOT` or `--root`.
+See the repository README for Antigravity's `mcpServers` example. Startup never
+installs dependencies. The default policy permits shared memory; `--space private`
+and `--space both` are explicit operator opt-ins. Tool arguments cannot expand
+that policy. `--read-only` hides write tools and denies writes. External MCP
+does not authenticate harness agents; respect plan/read-only and temp/no-memory
+rules and requests not to record. Disable memory access in no-memory contexts.
+
+Use `scope` to narrow a tool call; with both spaces enabled, every write must
+select `shared` or `private`. Follow the read/merge/record workflow below using
+JSON tool arguments instead of shell input. `memory_read` takes `name`, `offset`,
+and `limit`; page until the whole body is read. Restart the read if revisions
+change between pages. `memory_record` requires a unique `requestId` selected
+before the first call; retry with the same ID and content after a lost response.
+`memory_update` requires the complete Markdown body and `expectedRevision`.
+Inspect `isError` before treating a call as successful. No separate CLI write or
+manual index rebuild is needed after a successful MCP call.
 
 ## Setup
 
