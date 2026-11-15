@@ -223,6 +223,7 @@ into its writable configuration mirror. Its configured memory root is
 only through the chat profile, and the agents retain a file-based fallback.
 See [Memory format and migration](#memory-format-and-migration) for the file
 schema, migration command, and backups.
+Other shell-capable harnesses can use the [standalone memory CLI](#using-memory-from-other-harnesses).
 
 If a process crashes while writing, `.sessions/.memory-lock` can remain. Remove
 that directory only after confirming no memory writer is running, then retry.
@@ -561,14 +562,84 @@ Keep a backup copy separately if desired. Simultaneous edits to the same file
 still require normal sync-conflict resolution; local locks do not coordinate
 machines.
 
+### Using Memory From Other Harnesses
+
+[`memory.sh`](memory.sh) bridges the same store to any harness that can execute
+shell commands. It needs Bun with YAML support and this checkout; it does not
+need a running OpenCode server, Docker, or model credentials.
+
+Set the executable and memory workspace paths in the harness environment:
+
+```bash
+export MEMORY_CLI=/absolute/path/to/opencode-docker/memory.sh
+export MEMORY_ROOT=/absolute/path/to/memory-workspace
+
+"$MEMORY_CLI" --help
+"$MEMORY_CLI" recall
+"$MEMORY_CLI" search "container isolation"
+"$MEMORY_CLI" read MEMORY.md --offset 0 --limit 12000
+```
+
+`--root DIR` overrides `MEMORY_ROOT`; without either, the root is the caller's
+working directory. Input file paths are also relative to the caller's working
+directory. The default space is **shared**. Use `--space private` for private
+memory or `--space both` to read both spaces; writes select one space at a time.
+These are caller-selected spaces, not authenticated agent identities. Other
+harnesses apply their own permissions and temporary/no-memory policies.
+
+For a topic record, save a JSON input file (or pipe it to `--input -`):
+
+```json
+{
+  "topic": "memory-bridge",
+  "goal": "Reuse workspace memory in another harness",
+  "conclusion": "Use the standalone CLI",
+  "details": "Markdown discussion, decisions, and follow-up."
+}
+```
+
+```bash
+"$MEMORY_CLI" record --input record.json --request-id unique-session-topic-id
+```
+
+Optional string fields are `decisions`, `nextSteps`, and `preferences`. Use a
+unique request ID per record and reuse it on retries; the store finds an existing
+record even after a filename/date change. Without `--request-id`, the CLI
+generates one and returns it as `requestId`. JSON cannot override the space.
+
+For long-term updates, read the entire body first, merge changes, and submit:
+
+```json
+{
+  "content": "# Memory\nComplete merged Markdown body, without YAML frontmatter",
+  "expectedRevision": "revision returned by read"
+}
+```
+
+```bash
+"$MEMORY_CLI" update --input update.json
+```
+
+Success returns one JSON object on stdout and exits 0. Usage/JSON validation
+errors return JSON on stderr and exit 2; filesystem/store errors exit 1.
+Read conflicts require another read and merge. CLI and plugin calls share the
+same file locks, revisions, metadata, and index logic.
+
+The portable [workspace-memory skill](config/chat/memory-plugin/skill/SKILL.md)
+can be copied into another harness's skill directory or adapted as its project
+instructions. Configure `MEMORY_CLI` and `MEMORY_ROOT` alongside it. It describes
+when to recall/record, how to page reads, and how to preserve user recording
+preferences. The skill is opt-in and is not added to neutral runtime defaults.
+
 ### Focused Checks
 
 Run the daemon-free version-smoke, configuration-mirror, and launcher checks:
 
 ```bash
 uv run --no-project --with pytest pytest tests -q
-bun test tests/memory-plugin.test.js
+bun test tests/memory-plugin.test.js tests/memory-cli.test.js
 sh -n start.sh
+sh -n memory.sh
 sh -n docker/entrypoint.sh
 sh -n docker/smoke-tools.sh
 ```

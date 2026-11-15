@@ -84,6 +84,7 @@ jobs:
         run: |
           set -eu
           sh -n start.sh
+          sh -n memory.sh
           sh -n docker/entrypoint.sh
           sh -n docker/smoke-tools.sh
 
@@ -141,7 +142,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$PWD:/opt/runtime-source:ro" \
-            "${SMOKE_IMAGE}" bun test /opt/runtime-source/tests/memory-plugin.test.js
+            "${SMOKE_IMAGE}" bun test /opt/runtime-source/tests/memory-plugin.test.js /opt/runtime-source/tests/memory-cli.test.js
 
       - name: Smoke test the neutral default configuration
         run: |
