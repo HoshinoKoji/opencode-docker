@@ -557,28 +557,36 @@ Discussion, decisions, and follow-up remain ordinary Markdown.
 are required; optional `preferences` contributes to the generated index. Other
 custom metadata is preserved during long-term updates. Quote dates and
 timestamps as strings, and preserve `id` when editing or moving a record.
-Shared/private scope comes from the directory rather than a YAML field.
+Shared/private scope comes from the database (or import directory) rather than a YAML field.
 Duplicate session IDs within one space are reported as sync conflicts.
 
 Tool reads return `metadata` separately from the paginated Markdown body.
 `memory_update` accepts the body only and preserves metadata, updating
-`updated_at`. Revisions cover the complete on-disk file, including metadata.
+`updated_at`. Revisions cover the complete stored raw document, including metadata.
 
-Run these from the repository root with Bun, or inside the container shell:
+#### Historical Markdown maintenance utilities
+
+The following subsection describes the retained offline `manage.js` utility and
+internal Markdown fixtures only. Runtime plugin/CLI/MCP exclusively use SQLite;
+they never perform these relocations or read Markdown fallback files. For runtime
+migration use `memory.sh import` below, which leaves the source unchanged.
+These older commands edit source Markdown and are unnecessary for SQLite import.
+
+Run these only against an explicitly chosen offline legacy copy:
 
 ```bash
 # Preview; does not change memory or create backups.
-bun config/chat/memory-plugin/manage.js migrate --dry-run
+bun config/chat/memory-plugin/manage.js migrate --root /absolute/offline-copy --scope shared --dry-run
 
 # Back up and migrate shared and private files, preserving bodies and filenames.
-bun config/chat/memory-plugin/manage.js migrate
+bun config/chat/memory-plugin/manage.js migrate --root /absolute/offline-copy --scope shared
 
 # Recreate derived indexes after file synchronization or manual metadata edits.
-bun config/chat/memory-plugin/manage.js reindex
+bun config/chat/memory-plugin/manage.js reindex --root /absolute/offline-copy --scope shared
 
 # Preview and then relocate only shared root MEMORY.md, preserving every byte.
-bun config/chat/memory-plugin/manage.js relocate-shared --dry-run
-bun config/chat/memory-plugin/manage.js relocate-shared
+bun config/chat/memory-plugin/manage.js relocate-shared --root /absolute/offline-copy --dry-run
+bun config/chat/memory-plugin/manage.js relocate-shared --root /absolute/offline-copy
 ```
 
 The `migrate` and `reindex` commands accept `--root DIR` and `--scope shared|private|both` (default:
@@ -621,11 +629,89 @@ session timestamps use midnight UTC on the filename date and are marked
 time, marked `legacy-file-mtime`. These are migration approximations, not newly
 discovered historical creation times.
 
-For multi-device sync and backup, the authoritative files are `.sessions/MEMORY.md`,
+For an offline legacy Markdown copy, the source files are `.sessions/MEMORY.md`,
 `.sessions/casual/MEMORY.md`, and the dated Markdown records in both spaces. Indexes are disposable derived data.
 Keep a backup copy separately if desired. Simultaneous edits to the same file
 still require normal sync-conflict resolution; local locks do not coordinate
 machines.
+
+### Local SQLite Memory
+
+SQLite is the sole runtime backend for plugin, CLI and MCP tools; selecting
+`markdown` fails explicitly. SQLite requires an **explicit absolute memory
+root**, which can be shared by calls from different worktrees:
+
+```bash
+mkdir -p /absolute/persistent/memory
+export MEMORY_ROOT=/absolute/persistent/memory
+./memory.sh init --root "$MEMORY_ROOT" --space shared
+./memory.sh recall
+./memory.sh search '中文 preference' --space shared
+./memory-mcp.sh --backend sqlite --root "$MEMORY_ROOT" --read-only
+```
+
+CLI/MCP `--backend` overrides `MEMORY_BACKEND`; only `sqlite` is accepted. For the OpenCode plugin, set
+`options: { "backend": "sqlite", "root": "/absolute/persistent/memory" }` on its
+existing plugin entry; plugin options override the environment. In containers,
+mount that directory persistently and use its **container** absolute path. Mount
+the directory so SQLite can write WAL/SHM sidecars alongside the database.
+
+SQLite stores plaintext in `.memory-db/shared.sqlite` and
+`.memory-db/private.sqlite` under that root, creating each only on its first
+write. It preserves tool scope permissions, stable IDs, metadata, pagination,
+section updates, retry behavior and full-document revisions. INDEX remains
+derived. Returned record paths are logical compatibility paths, not Markdown
+files. Reads of a missing SQLite space return empty memory without importing any
+Markdown files. `init` is idempotent and initializes only selected spaces. For
+ergonomics, ordinary writes may also initialize an empty space; initialization
+never imports existing Markdown. Reads of absent spaces create no databases.
+
+#### Explicit initialization, import and rollback export
+
+```bash
+# Source and destination are existing absolute directories; --root is the database destination.
+./memory.sh import --source /absolute/old-workspace --root "$MEMORY_ROOT" --space shared --dry-run
+./memory.sh import --source /absolute/old-workspace --root "$MEMORY_ROOT" --space shared
+# migrate is an alias for import. Select private or both only when authorized.
+# Export requires a new destination whose parent already exists.
+./memory.sh export --root "$MEMORY_ROOT" --destination /absolute/backups/new-export --space shared --dry-run
+./memory.sh export --root "$MEMORY_ROOT" --destination /absolute/backups/new-export --space shared
+```
+
+`init`, `import`/`migrate` and `export` support `--dry-run` and explicit
+`--space shared|private|both` (default shared). They are CLI administration
+commands, never agent or MCP tools. Caller permissions and recording consent
+still apply. Stop source Markdown writers/editors during import; import reads a
+snapshot into memory and leaves all source files untouched. Back up sources separately.
+It accepts shared `.sessions/MEMORY.md` or legacy root `MEMORY.md`, dated records
+in `.sessions/`, and private documents in `.sessions/casual/`. Dual shared paths
+are rejected even if identical or empty. INDEX is derived; old INDEX files and
+`.backups/` contents are excluded. Unexpected filenames, selected symlinks,
+duplicate IDs, invalid metadata/UTF-8, and differing destination documents fail.
+Exact matching imports are idempotent. Raw UTF-8 bytes, existing metadata and IDs
+are preserved, including CRLF/BOM and legacy documents without frontmatter.
+
+All selected spaces are preflighted before writing, then each space commits in
+one transaction with history/outbox. A failure within a space rolls it back;
+`both` is two independent transactions, so a late failure in private can leave
+shared committed. Retry safely after resolving the error. There is no cross-space
+atomicity or live-source snapshot guarantee. Shared-only commands never open
+private documents or databases.
+
+Export writes current raw documents into canonical Markdown paths in a new
+directory; it omits derived indexes and database history. Use that snapshot with
+a legacy Markdown reader for rollback, or import it into a fresh SQLite root.
+Preserve database history with a separate consistent SQLite backup (stop writers
+before copying database files and their WAL sidecars). No real memory migration
+or deployment has been performed by this implementation.
+
+This milestone includes WAL transactions, whole-document history and atomic
+outbox groundwork. Sync, stable section identities, encryption
+and database backup commands are deferred. Local storage and the future sync process are
+trusted plaintext; optional encryption will apply at upload/download boundaries.
+See [architecture, references and limitations](docs/memory-sqlite-milestone.md).
+Keep database directories and any future sync credentials/keys or exports in the
+ignored `.memory-db/`, `.memory-sync/` and `.memory-exports/` locations.
 
 ### Using Memory From Other Harnesses
 
@@ -645,8 +731,8 @@ export MEMORY_ROOT=/absolute/path/to/memory-workspace
 "$MEMORY_CLI" read MEMORY.md --offset 0 --limit 12000
 ```
 
-`--root DIR` overrides `MEMORY_ROOT`; without either, the root is the caller's
-working directory. Input file paths are also relative to the caller's working
+`--root DIR` overrides `MEMORY_ROOT`; one must provide an absolute directory.
+Input file paths are relative to the caller's working
 directory. The default space is **shared**. Use `--space private` for private
 memory or `--space both` to read both spaces; writes select one space at a time.
 These are caller-selected spaces, not authenticated agent identities. Other
@@ -824,7 +910,7 @@ Run the daemon-free version-smoke, configuration-mirror, and launcher checks:
 
 ```bash
 uv run --no-project --with pytest pytest tests -q
-bun test tests/memory-plugin.test.js tests/memory-cli.test.js
+bun test tests/memory-plugin.test.js tests/memory-cli.test.js tests/memory-sqlite.test.js
 bun install --cwd config/chat/memory-mcp --frozen-lockfile
 bun test ./config/chat/memory-mcp/server.test.js
 sh -n start.sh

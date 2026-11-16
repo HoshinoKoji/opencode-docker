@@ -1,12 +1,18 @@
 import { MemoryStore } from "../memory-plugin/store.js";
+import { createMemoryStore } from "../memory-plugin/backend.js";
 
 // External clients have no OpenCode execution-context identity. This adapter
-// replaces only scope authorization; all persistence remains in MemoryStore.
+// replaces only scope authorization on the selected store; document operations
+// remain inherited from MemoryStore. No database is opened by construction.
 export class ExternalMemoryStore extends MemoryStore {
-  constructor(root, { space = "shared", readOnly = false } = {}) {
+  constructor(root, { space = "shared", readOnly = false, backend = "sqlite" } = {}) {
     super(root);
     if (!["shared", "private", "both"].includes(space)) throw new Error("Invalid configured space.");
     this.policy = Object.freeze({ space, readOnly });
+    const store = createMemoryStore(root, { backend });
+    store.policy = this.policy;
+    store.scopes = this.scopes.bind(store);
+    return store;
   }
 
   scopes(_identity, scope = "default", writing = false) {

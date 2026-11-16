@@ -6,6 +6,8 @@ import { mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } fro
 import path from "node:path";
 import os from "node:os";
 import { ExternalMemoryStore } from "./policy.js";
+import { importMarkdown } from "../memory-plugin/transfer.js";
+import { Database } from "bun:sqlite";
 
 const launcher = path.resolve(import.meta.dir, "../../..", "memory-mcp.sh");
 const directories = [];
@@ -13,6 +15,7 @@ const clients = [];
 test("stdio updates only selected section with revision checks", async () => {
   const root = await fixture();
   await writeFile(path.join(root, ".sessions/MEMORY.md"), "# Memory\n## First\nold\n## Last\nkeep\n");
+  await importMarkdown({ root, source: root });
   const { client } = await connect(root);
   const read = (await result(client, "read", { name: "MEMORY.md", section: "First" })).results[0];
   const input = { section: "First", content: "## First\nnew", expectedRevision: read.revision };
@@ -23,6 +26,26 @@ test("stdio updates only selected section with revision checks", async () => {
   await denied(readonly, "update", input);
 });
 const record = { topic: "mcp-test", goal: "Share memory", conclusion: "Saved", details: "中文 discussion", requestId: "stable-request" };
+test("SQLite stdio persistence, retries, sections and read-only scope policy", async () => {
+  const root = await fixture();
+  const { client } = await connect(root, ["--backend", "sqlite"]);
+  const initial = (await result(client, "read", { name: "MEMORY.md" })).results[0];
+  expect(initial.text).toBe(""); // Synthetic Markdown fixture is never imported.
+  const saved = await result(client, "record", record);
+  expect(await result(client, "record", record)).toEqual(saved);
+  await denied(client, "record", { ...record, details: "changed" });
+  await result(client, "update", { content: "# Memory\n## Detail\nold\n## Last\nkeep", expectedRevision: initial.revision });
+  const selected = (await result(client, "read", { name: "MEMORY.md", section: "Detail" })).results[0];
+  await result(client, "update", { section: "Detail", content: "## Detail\nnew", expectedRevision: selected.revision });
+  await denied(client, "update", { content: "stale", expectedRevision: initial.revision });
+  const { client: readonly } = await connect(root, ["--backend", "sqlite", "--read-only"]);
+  expect((await readonly.listTools()).tools.map((t) => t.name)).toEqual(["memory_recall", "memory_search", "memory_read"]);
+  expect((await result(readonly, "search", { query: "中文" })).results[0].name).toBe(saved.name);
+  expect((await result(readonly, "recall")).spaces[0].recent).toHaveLength(1);
+  await denied(readonly, "record", record);
+  await denied(readonly, "read", { name: "MEMORY.md", scope: "private" });
+  expect(await readFile(path.join(root, ".sessions/MEMORY.md"), "utf8")).toContain("shared-marker");
+});
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "memory-mcp-test-"));
   directories.push(root);
@@ -67,6 +90,7 @@ afterEach(async () => {
 
 test("stdio initialize/list/call defaults to shared and cannot expose private data", async () => {
   const root = await fixture();
+  await importMarkdown({ root, source: root, scope: "both" });
   const { client, diagnostics } = await connect(root);
   expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
     "memory_recall", "memory_search", "memory_read", "memory_record", "memory_update",
@@ -91,6 +115,7 @@ test("stdio initialize/list/call defaults to shared and cannot expose private da
 test("stdio exposes section schema and progressive recall with full-file revisions", async () => {
   const root = await fixture();
   await writeFile(path.join(root, ".sessions/MEMORY.md"), "# Memory\n## Summary\nbrief\n## Detail\nsecret-detail\n### Child\nnested\n## End\nstop\n");
+  await importMarkdown({ root, source: root });
   const { client } = await connect(root);
   const schema = (await client.listTools()).tools.find((tool) => tool.name === "memory_read").inputSchema;
   expect(schema.properties.section.type).toBe("string");
@@ -113,7 +138,9 @@ test("records retry across renamed dates, reject changed retries, page reads and
   const root = await fixture();
   const { client } = await connect(root);
   const saved = await result(client, "record", record);
-  await rename(path.join(root, saved.path), path.join(root, ".sessions/2000-01-01-renamed.md"));
+  const db = new Database(path.join(root, ".memory-db/shared.sqlite"));
+  db.query("UPDATE documents SET name = ? WHERE name = ?").run("2000-01-01-renamed.md", saved.name);
+  db.close();
   const retry = await result(client, "record", record);
   expect(retry.id).toBe(saved.id);
   expect(retry.name).toBe("2000-01-01-renamed.md");
@@ -125,14 +152,15 @@ test("records retry across renamed dates, reject changed retries, page reads and
   const before = (await result(client, "read", { name: "MEMORY.md" })).results[0];
   const input = { content: "# Shared\nMerged preference", expectedRevision: before.revision };
   await result(client, "update", input);
-  const raw = await readFile(path.join(root, ".sessions/MEMORY.md"), "utf8");
+  const raw = (await result(client, "read", { name: "MEMORY.md" })).results[0];
   await denied(client, "update", input);
-  expect(await readFile(path.join(root, ".sessions/MEMORY.md"), "utf8")).toBe(raw);
+  expect((await result(client, "read", { name: "MEMORY.md" })).results[0]).toEqual(raw);
   expect((await result(client, "read", { name: "MEMORY.md" })).results[0].metadata.type).toBe("long_term");
 });
 
 test("private/both opt-in, explicit write scope, and root flag overrides environment", async () => {
   const root = await fixture();
+  await importMarkdown({ root, source: root, scope: "both" });
   const other = await fixture();
   const { client: privateClient } = await connect(other, ["--root", root, "--space=private"]);
   expect((await result(privateClient, "recall")).spaces.map((s) => s.scope)).toEqual(["private"]);
@@ -175,8 +203,8 @@ test("strict schemas reject invalid calls and memory symlinks cannot cross scope
     ["record", { ...record, details: 12 }], ["record", { ...record, share: true }],
     ["record", { ...record, topic: "../escape" }], ["update", { content: "missing revision" }],
   ]) await denied(client, name, args);
-  await rm(path.join(root, ".sessions/MEMORY.md"));
-  await symlink(path.join(root, ".sessions/casual/MEMORY.md"), path.join(root, ".sessions/MEMORY.md"));
+  await mkdir(path.join(root, ".memory-db"));
+  await symlink(path.join(root, ".sessions/casual/MEMORY.md"), path.join(root, ".memory-db/shared.sqlite"));
   const response = await call(client, "read", { name: "MEMORY.md" });
   expect(response.isError).toBe(true);
   expect(JSON.stringify(response)).not.toContain("private-marker");

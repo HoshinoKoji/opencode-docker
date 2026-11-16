@@ -7,6 +7,7 @@ import { MemoryStore } from "../config/chat/memory-plugin/store.js";
 import { decode, encode } from "../config/chat/memory-plugin/format.js";
 import { migrate, relocateShared } from "../config/chat/memory-plugin/manage.js";
 import { sections } from "../config/chat/memory-plugin/sections.js";
+import { createMemoryStore } from "../config/chat/memory-plugin/backend.js";
 
 const directories = [];
 test("section updates preserve surrounding bytes, metadata and reject unsafe replacements", async () => {
@@ -463,5 +464,5 @@ test("plugin uses execution context identity and honors host permission failures
   expect(assertions.at(-1).resources).toEqual(["shared"]);
   denied = true;
   await expect(tools.get("update").execute({ content: "no", expectedRevision: "no" }, context)).rejects.toThrow("permission denied");
-  expect(await readdir(path.join(root, ".sessions/casual"))).not.toContain("MEMORY.md");
+  expect((await createMemoryStore(root).read("casual", { name: "MEMORY.md", scope: "private" })).results[0].text).toBe("");
 });

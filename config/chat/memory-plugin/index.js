@@ -1,5 +1,5 @@
 import path from "node:path";
-import { MemoryStore } from "./store.js";
+import { createMemoryStore } from "./backend.js";
 
 const scope = { type: "string", enum: ["default", "shared", "private", "both"], default: "default" };
 const text = { type: "string" };
@@ -21,11 +21,12 @@ const definitions = [
 export default {
   id: "workspace-memory",
   async setup(ctx) {
-    const root = ctx.options.root ?? ctx.location.project.directory;
+    const backend = ctx.options.backend ?? process.env.MEMORY_BACKEND ?? "sqlite";
+    const root = ctx.options.root ?? process.env.MEMORY_ROOT;
     if (typeof root !== "string" || !path.isAbsolute(root)) throw new Error("Memory root must be an absolute directory.");
-    const store = new MemoryStore(root);
+    const store = createMemoryStore(root, { backend });
     await ctx.tool.transform((editor) => {
-      editor.namespace({ name: "memory", description: "Review, search, and maintain the chat workspace's Markdown memory." });
+      editor.namespace({ name: "memory", description: "Review, search, and maintain workspace memory." });
       for (const [name, description, properties, required] of definitions) {
         editor.add({
           name, description,

@@ -151,7 +151,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$PWD:/opt/runtime-source:ro" \
-            "${SMOKE_IMAGE}" bun test /opt/runtime-source/tests/memory-plugin.test.js /opt/runtime-source/tests/memory-cli.test.js
+            "${SMOKE_IMAGE}" bun test /opt/runtime-source/tests/memory-plugin.test.js /opt/runtime-source/tests/memory-cli.test.js /opt/runtime-source/tests/memory-sqlite.test.js /opt/runtime-source/tests/memory-transfer.test.js
 
       - name: Smoke test the neutral default configuration
         run: |

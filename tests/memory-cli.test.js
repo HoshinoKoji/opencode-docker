@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Database } from "bun:sqlite";
 
 const wrapper = path.resolve(import.meta.dir, "../memory.sh");
 const directories = [];
@@ -10,6 +11,7 @@ test("CLI updates a section via JSON without changing siblings", async () => {
   const { root, call } = await fixture();
   await mkdir(path.join(root, ".sessions"));
   await writeFile(path.join(root, ".sessions/MEMORY.md"), "# Memory\n## First\nold\n## Last\nkeep\n");
+  expect(call(["import", "--source", root]).status).toBe(0);
   const read = JSON.parse(call(["read", "MEMORY.md", "--section", "First"]).stdout).results[0];
   const input = JSON.stringify({ section: "First", content: "## First\nnew", expectedRevision: read.revision });
   expect(call(["update", "--input=-"], input).status).toBe(0);
@@ -36,6 +38,7 @@ const record = { topic: "cli-bridge", goal: "Share memory", conclusion: "Use the
 test("CLI progressive recall and section pagination", async () => {
   const { root, call } = await fixture();
   await writeFile(path.join(root, "MEMORY.md"), "# Memory\n## Summary\nbrief\n## Detail\nprivate-detail\n### Child\nnested\n## End\nstop\n");
+  expect(call(["import", "--source", root]).status).toBe(0);
   const memory = JSON.parse(call(["recall"]).stdout).spaces[0].memory;
   expect(memory.text).toContain("brief");
   expect(memory.text).not.toContain("private-detail");
@@ -86,7 +89,7 @@ test("external cwd, root override, stdin and file writes, and explicit spaces", 
   const empty = JSON.parse(call(["recall", "--root", other]).stdout);
   expect(empty.spaces[0].recent).toEqual([]);
   expect(await readdir(other)).toEqual([]);
-  expect(await readdir(root)).toContain(".sessions");
+  expect(await readdir(root)).toContain(".memory-db");
 });
 
 test("stable request IDs retry records after a filename/date change without duplicates", async () => {
@@ -94,12 +97,14 @@ test("stable request IDs retry records after a filename/date change without dupl
   const args = ["record", "--input", "-", "--request-id", "retry-key"];
   const first = JSON.parse(call(args, JSON.stringify(record)).stdout);
   const renamed = ".sessions/2000-01-01-renamed.md";
-  await rename(path.join(root, first.path), path.join(root, renamed));
+  const db = new Database(path.join(root, ".memory-db/shared.sqlite"));
+  db.query("UPDATE documents SET name = ? WHERE name = ?").run(path.basename(renamed), first.name);
+  db.close();
   const second = call(args, JSON.stringify(record));
   expect(second.status).toBe(0);
   expect(JSON.parse(second.stdout).path).toBe(renamed);
   expect(JSON.parse(second.stdout).id).toBe(first.id);
-  expect((await readdir(path.join(root, ".sessions"))).filter((f) => f !== "INDEX.md")).toEqual(["2000-01-01-renamed.md"]);
+  expect(JSON.parse(call(["recall"]).stdout).spaces[0].recent).toHaveLength(1);
   const changed = call(args, JSON.stringify({ ...record, details: "Changed content" }));
   expect(changed.status).toBe(1);
   expect(changed.stdout).toBe("");
@@ -112,13 +117,13 @@ test("long-term JSON updates retain revisions and report conflicts on stderr", a
   const input = JSON.stringify({ content: "# Memory\nA lasting preference", expectedRevision: previous.revision });
   const updated = call(["update", "--input=-"], input);
   expect(updated.status).toBe(0);
-  const raw = await readFile(path.join(root, ".sessions/MEMORY.md"), "utf8");
-  expect(raw).toStartWith("---\n");
+  const raw = JSON.parse(call(["read", "MEMORY.md"]).stdout).results[0];
+  expect(raw.metadata.type).toBe("long_term");
   const stale = call(["update", "--input=-"], input);
   expect(stale.status).toBe(1);
   expect(stale.stdout).toBe("");
   expect(JSON.parse(stale.stderr).error.message).toContain("Memory changed");
-  expect(await readFile(path.join(root, ".sessions/MEMORY.md"), "utf8")).toBe(raw);
+  expect(JSON.parse(call(["read", "MEMORY.md"]).stdout).results[0]).toEqual(raw);
 });
 
 test("invalid flags and JSON are rejected before any writes", async () => {

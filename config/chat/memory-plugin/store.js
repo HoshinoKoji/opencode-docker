@@ -298,7 +298,7 @@ export class MemoryStore {
       if (!existing) await this.atomic(relative, content);
       await this.rebuild(scope);
       return { scope, name: savedName, path: relative, id: previous.metadata?.id ?? metadata.id, revision: revision(existing || content) };
-    });
+    }, scope);
   }
 
   async update(agent, { content, expectedRevision, section, scope = "default", share = false }) {
@@ -313,10 +313,7 @@ export class MemoryStore {
       const document = decode(previous);
       if (decode(content).metadata) throw new Error("Pass only the Markdown body to update; the plugin preserves metadata automatically.");
       const now = new Date().toISOString();
-      const metadata = document.metadata ?? {
-        schema_version: 1, id: `memory-${randomUUID()}`, type: "long_term", date: now.slice(0, 10),
-        topic: "long-term-memory", summary: "Long-term preferences and context", created_at: now,
-      };
+      const metadata = await this.updateMetadata(space, document, now);
       if (metadata.type !== "long_term") throw new Error("MEMORY.md must have long_term metadata.");
       const body = section === undefined ? `${content.trim()}\n` : replaceSection(document.body, section, content);
       if (body.length > 100000) throw new Error("Long-term memory must be at most 100000 characters.");
@@ -324,6 +321,13 @@ export class MemoryStore {
       if (space === "shared") await this.relocateShared();
       await this.atomic(relative, text);
       return { scope: space, name: "MEMORY.md", ...(section === undefined ? {} : { section }), revision: revision(text) };
-    });
+    }, space);
+  }
+
+  async updateMetadata(_scope, document, now) {
+    return document.metadata ?? {
+      schema_version: 1, id: `memory-${randomUUID()}`, type: "long_term", date: now.slice(0, 10),
+      topic: "long-term-memory", summary: "Long-term preferences and context", created_at: now,
+    };
   }
 }

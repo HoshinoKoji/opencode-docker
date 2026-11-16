@@ -4,6 +4,11 @@
 /opencode.json
 /opencode.jsonc
 .sessions/
+**/.memory-db/
+**/.memory-sync/
+**/.memory-exports/
+**/*.sqlite
+**/*.sqlite-*
 # Legacy shared fallback (canonical memory is excluded with .sessions/).
 MEMORY.md
 tests/

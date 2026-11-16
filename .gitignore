@@ -3,6 +3,11 @@
 # Legacy shared fallback; canonical shared/private memory is under .sessions/.
 MEMORY.md
 .sessions/
+.memory-db/
+.memory-sync/
+.memory-exports/
+*.sqlite
+*.sqlite-*
 .env
 /compose.override.yaml
 /opencode.json
