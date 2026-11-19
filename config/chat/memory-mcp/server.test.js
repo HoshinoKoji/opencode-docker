@@ -102,9 +102,11 @@ test("stdio initialize/list/call defaults to shared and cannot expose private da
   const root = await fixture();
   await importMarkdown({ root, source: root, scope: "both" });
   const { client, diagnostics } = await connect(root);
-  expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
-    "memory_recall", "memory_search", "memory_read", "memory_record", "memory_update",
+  const { tools } = await client.listTools();
+  expect(tools.map((tool) => tool.name)).toEqual([
+    "memory_recall", "memory_search", "memory_read", "memory_record", "memory_update", "memory_delete",
   ]);
+  expect(tools.find((tool) => tool.name === "memory_delete").annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
   expect(JSON.stringify(await result(client, "recall"))).not.toContain("private-marker");
   expect((await result(client, "search", { query: "private-marker" })).matches).toBe(0);
   expect((await result(client, "read", { name: "MEMORY.md" })).results).toHaveLength(1);
@@ -186,6 +188,30 @@ test("private/both opt-in, explicit write scope, and root flag overrides environ
   for (const scope of ["shared", "private"]) expect((await result(client, "record", { ...record, scope })).scope).toBe(scope);
 });
 
+test("stdio edits and deletes a single session with the same scope and current revision", async () => {
+  const root = await fixture();
+  const { client } = await connect(root, ["--space=both"]);
+  const scope = "private";
+  const { name, revision, id } = await result(client, "record", { ...record, scope });
+  const edit = { name, expectedRevision: revision, content: "## Details\nedited MCP body", section: "Details" };
+  await denied(client, "update", edit);
+  const edited = await result(client, "update", { ...edit, scope });
+  await denied(client, "record", { ...record, scope });
+  const deletion = { scope, name, expectedRevision: edited.revision };
+  await denied(client, "delete", deletion); // v1
+  await upgradeSync({ root, scope });
+  await denied(client, "delete", { name, expectedRevision: edited.revision });
+  await denied(client, "delete", { ...deletion, scope: "both" });
+  await denied(client, "delete", { ...deletion, expectedRevision: revision });
+  expect((await result(client, "search", { query: "edited MCP body" })).matches).toBe(1);
+  const { client: shared } = await connect(root);
+  await denied(shared, "delete", deletion);
+  expect(await result(client, "delete", deletion)).toMatchObject({ scope, name, id, deleted: true });
+  await denied(client, "delete", deletion);
+  await denied(client, "record", { ...record, scope });
+  expect((await result(client, "search", { query: "edited MCP body" })).matches).toBe(0);
+});
+
 test("read-only hides writes and denies direct calls and store mutations", async () => {
   const root = await fixture();
   const { client } = await connect(root, ["--read-only", "--space=both"]);
@@ -194,10 +220,12 @@ test("read-only hides writes and denies direct calls and store mutations", async
   for (const scope of ["shared", "private", "both"]) {
     await denied(client, "record", { ...record, scope });
     await denied(client, "update", { scope, content: "changed", expectedRevision: before[0].revision });
+    await denied(client, "delete", { scope, name: "2000-01-01-topic.md", expectedRevision: before[0].revision });
   }
   const store = new ExternalMemoryStore(root, { space: "both", readOnly: true });
   await expect(store.record(null, { ...record, scope: "shared" }, "direct")).rejects.toThrow("read-only");
   await expect(store.update(null, { scope: "private", content: "changed" })).rejects.toThrow("read-only");
+  await expect(store.delete(null, { scope: "private", name: "2000-01-01-topic.md", expectedRevision: before[0].revision })).rejects.toThrow("read-only");
   expect((await result(client, "read", { name: "MEMORY.md" })).results).toEqual(before);
   expect(await readdir(path.join(root, ".sessions"))).toEqual(["MEMORY.md", "casual"]);
 });
@@ -212,6 +240,10 @@ test("strict schemas reject invalid calls and memory symlinks cannot cross scope
     ["record", { ...record, requestId: "" }], ["record", { ...record, requestId: undefined }],
     ["record", { ...record, details: 12 }], ["record", { ...record, share: true }],
     ["record", { ...record, topic: "../escape" }], ["update", { content: "missing revision" }],
+    ["update", { name: "INDEX.md", content: "x", expectedRevision: "a".repeat(64) }],
+    ["update", { name: "../MEMORY.md", content: "x", expectedRevision: "a".repeat(64) }],
+    ["delete", { name: "2000-01-01-test.md" }], ["delete", { name: "MEMORY.md", expectedRevision: "a".repeat(64) }],
+    ["delete", { name: "2000-01-01-test.md", expectedRevision: "a".repeat(64), section: "Details" }],
   ]) await denied(client, name, args);
   await mkdir(path.join(root, ".memory-db"));
   await symlink(path.join(root, ".sessions/casual/MEMORY.md"), path.join(root, ".memory-db/shared.sqlite"));

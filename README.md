@@ -255,8 +255,8 @@ The reusable runtime provides neutral development defaults.
 ### Memory Tools
 
 The chat profile includes a local, dependency-free OpenCode V2 plugin at
-[`config/chat/memory-plugin/`](config/chat/memory-plugin/). It keeps the existing
-Markdown files, adds YAML frontmatter for structured metadata, and provides five tools:
+[`config/chat/memory-plugin/`](config/chat/memory-plugin/). It stores Markdown
+documents and their YAML metadata in SQLite and provides six tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -264,12 +264,14 @@ Markdown files, adds YAML frontmatter for structured metadata, and provides five
 | `memory_search` | Find matching records with short snippets |
 | `memory_read` | Read a record or memory file, optionally selecting an exact heading title with `section` |
 | `memory_record` | Save a topic record and update its index together |
-| `memory_update` | Update long-term memory with revision conflict detection |
+| `memory_update` | Edit long-term memory or an existing session record with a revision check |
+| `memory_delete` | Delete an existing session record with a revision check (SQLite v2 only) |
 
 The host supplies the current agent identity. `serious` and `build` use shared memory;
 `casual` can read both spaces and writes privately by default. Explicit shared
-writes use `scope: "shared", share: true`. `plan` has read-only shared access,
-enforced by the store even for direct record/update calls. `temp`, `general`,
+writes use `scope: "shared", share: true`. Delete only at the user's explicit
+request; OpenCode asks for permission in writable modes. `plan` has read-only
+shared access, enforced by the store for all writes. `temp`, `general`,
 and `explore` have no memory-tool access. Native V2 permission overrides enable
 `build` and `plan` while preserving their built-in coding prompts. `AGENTS.md`
 defines startup and task-conclusion procedures, including shared-only fallbacks
@@ -277,27 +279,23 @@ and the prohibition on `plan` writing memory through CLI commands or file edits.
 The model still decides when and what to record, following your instructions;
 the plugin does not automatically collect conversations or call another model.
 
-Existing Markdown records work immediately, and manual edits are visible on
-the next read/search. The directory determines shared/private scope; stable IDs
-stay with records across edits and synchronization. `INDEX.md` is a generated
-view of the records and can be rebuilt; recall does not depend on a synced index.
+Existing Markdown records are available after an explicit import. Stable IDs
+stay with records across edits and synchronization. `INDEX.md` and recent records
+in recall are derived from the current records.
 Search matches all whitespace-separated literal terms,
-case-insensitively, including Chinese text. There is no embedding service or
-database. Results are bounded; long reads can be paged. Writes use a shared
-filesystem lock and atomic file replacement; stale long-term revisions are
-rejected. New record names include a UTC date and a stable tool-call suffix.
+case-insensitively, including Chinese text. Results are bounded; long reads can
+be paged. Writes use SQLite transactions; stale revisions are rejected. New
+record names include a UTC date and a stable tool-call suffix.
 
 Restart the container once after updating the chat profile to copy the plugin
 into its writable configuration mirror. Its configured memory root is
 `/home/bun/workspace`; adjust the plugin's `options.root` in
 `config/chat/opencode.jsonc` for another workspace layout. The plugin is loaded
-only through the chat profile, and the agents retain a file-based fallback.
+only through the chat profile, and the agents retain a scoped SQLite CLI fallback.
 See [Memory format and migration](#memory-format-and-migration) for the file
 schema, migration command, and backups.
 Other shell-capable harnesses can use the [standalone memory CLI](#using-memory-from-other-harnesses).
 
-If a process crashes while writing, `.sessions/.memory-lock` can remain. Remove
-that directory only after confirming no memory writer is running, then retry.
 Agent-level tool restrictions organize memory access; ordinary filesystem
 access remains controlled separately by OpenCode permissions and mounts.
 
@@ -594,14 +592,15 @@ Discussion, decisions, and follow-up remain ordinary Markdown.
 
 `type` is `session` for records or `long_term` for `MEMORY.md`. The fields shown
 are required; optional `preferences` contributes to the generated index. Other
-custom metadata is preserved during long-term updates. Quote dates and
+custom metadata is preserved during updates. Quote dates and
 timestamps as strings, and preserve `id` when editing or moving a record.
 Shared/private scope comes from the database (or import directory) rather than a YAML field.
 Duplicate session IDs within one space are reported as sync conflicts.
 
 Tool reads return `metadata` separately from the paginated Markdown body.
-`memory_update` accepts the body only and preserves metadata, updating
-`updated_at`. Revisions cover the complete stored raw document, including metadata.
+`memory_update` accepts the body only and preserves metadata, including the
+stored session summary shown in recall and the index, except `updated_at`.
+Revisions cover the complete stored raw document, including metadata.
 
 #### Historical Markdown maintenance utilities
 
@@ -750,8 +749,8 @@ before copying database files and their WAL sidecars).
 #### Opt-in local sync-state integration (schema v2)
 
 Plugin/CLI/MCP support both v1 and v2. New databases initialize as v1 and ordinary
-reads/writes never upgrade them. After an explicit upgrade, ordinary record/update
-and imports atomically persist sync operations, branch snapshots, stable section
+reads/writes never upgrade them. After an explicit upgrade, records, updates,
+deletions and imports atomically persist sync operations, branch snapshots, stable section
 IDs, projections and the sync outbox. Runtime reads and exports use the current
 projection, including received changes and tombstones. Existing v1 history and
 pending outbox entries are retained. Runtime edits use conservative whole-document
@@ -829,11 +828,14 @@ unique request ID per record and reuse it on retries; the store finds an existin
 record even after a filename/date change. Without `--request-id`, the CLI
 generates one and returns it as `requestId`. JSON cannot override the space.
 
-For whole-file long-term updates, read the entire body first, merge changes, and submit:
+For whole-file updates, read the entire target body first, merge changes, and submit
+this JSON. Omit `name` for `MEMORY.md`; include it to select an existing session
+record. Editing works in SQLite v1 and v2:
 
 ```json
 {
-  "content": "# Memory\nComplete merged Markdown body, without YAML frontmatter",
+  "name": "2026-01-01-topic.md",
+  "content": "# Topic\nComplete merged Markdown body, without YAML frontmatter",
   "expectedRevision": "revision returned by read"
 }
 ```
@@ -860,6 +862,18 @@ The full-file revision still detects edits elsewhere; reread and merge on confli
 Metadata and stable ID are preserved. Update affected summary/navigation sections
 separately using the latest revision so the overview stays consistent. Whole-file
 updates remain available for renaming headings or restructuring several topics.
+
+To delete an existing session record, read it to get the current revision and
+run `"$MEMORY_CLI" delete --input delete.json`. The JSON contains `name` and
+`expectedRevision`; choose the same `--space` used to read the record. Only
+upgraded SQLite v2 spaces support deletion. `MEMORY.md` and `INDEX.md` are protected.
+Deleted records disappear from search, recall, indexes and Markdown exports; a
+direct whole-body read has the same empty result as a missing record. SQLite
+retains the tombstone and history, so this is not secure erasure. A repeat
+delete, a `record` retry with the deleted identity, or an import matching the
+tombstoned name or ID fails. An old `record` retry cannot overwrite an edit
+and fails if its content no longer matches. Markdown exports do not carry
+tombstones or history to a fresh database.
 
 Success returns one JSON object on stdout and exits 0. Usage/JSON validation
 errors return JSON on stderr and exit 2; filesystem/store errors exit 1.
@@ -928,8 +942,9 @@ working directory; the directory must already exist. Relative roots resolve
 against the client-selected working directory. `--root=DIR` and `--space=VALUE`
 also work. Unknown flags and positional arguments fail with exit 2.
 
-Tools are `memory_recall`, `memory_search`, `memory_read`, `memory_record`, and
-`memory_update`. Arguments use the CLI's JSON field names plus optional `scope`.
+Tools are `memory_recall`, `memory_search`, `memory_read`, `memory_record`,
+`memory_update`, and `memory_delete`. Arguments use the CLI's JSON field names
+plus optional `scope`.
 `memory_record` **requires `requestId`**: choose a unique, non-secret ID before
 the first call and reuse it with identical content on retries, including lost
 responses. `memory_read` accepts `name`, optional `section`, `offset`, and `limit` (up to 20000
@@ -942,8 +957,11 @@ metadata and revision still cover the full file. Session records also support
 sections; INDEX.md supports only whole-body pagination. The CLI equivalent is
 `memory.sh read MEMORY.md --section "速览摘要" --offset 0 --limit 2000`.
 For whole-file `memory_update`, omit `section` and read every whole-body page; send the complete merged body as
-`content` and its `expectedRevision`. If a revision changes during paging or
-update, read again and merge. Search takes `query` and optional `limit` (1–20),
+`content` and its `expectedRevision`. Omit `name` for `MEMORY.md` or give an
+existing session filename. If a revision changes during paging or update, read
+again and merge. With the user's explicit authorization, `memory_delete` takes
+an existing session filename and current `expectedRevision` in a v2 space.
+Search takes `query` and optional `limit` (1–20),
 returning total matches and a bounded result list. Recall returns five recent
 entries per space plus summary/navigation only, with section title/level
 descriptors for targeted loading. Recognized summary titles are `速览摘要`, `摘要`,

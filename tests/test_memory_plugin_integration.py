@@ -31,6 +31,11 @@ def test_chat_memory_plugin_loads_with_real_opencode(tmp_path):
         key: value for key, value in os.environ.items()
         if not key.startswith(("OPENCODE", "XDG_"))
     }
+    # The launcher needs the pin even though this test isolates its environment.
+    version = subprocess.check_output(
+        ["sh", "-c", '. "$1"; printf "%s" "$OPENCODE_VERSION"', "versions", str(ROOT / "versions.env")],
+        env=env, text=True,
+    )
     env.update(
         HOME=str(home), OPENCODE_HOME=str(home),
         XDG_CONFIG_HOME=str(home / ".config"),
@@ -42,6 +47,7 @@ def test_chat_memory_plugin_loads_with_real_opencode(tmp_path):
         OPENCODE_PROFILE_INPUT=str(profile),
         OPENCODE_AUTH_INPUT=str(tmp_path / "no-auth"),
         CARGO_HOME=str(home / ".cargo"),
+        OPENCODE_VERSION=version,
         OPENCODE_SERVER_USERNAME="opencode", OPENCODE_SERVER_PASSWORD="isolated-test-password",
     )
     # A test-only plugin reads the registered catalog after the memory plugin.
@@ -100,20 +106,22 @@ def test_chat_memory_plugin_loads_with_real_opencode(tmp_path):
 
             tools = json.loads(catalog.read_text())
             assert {tool["id"] for tool in tools} == {
-                "memory_recall", "memory_search", "memory_read", "memory_record", "memory_update",
+                "memory_recall", "memory_search", "memory_read", "memory_record", "memory_update", "memory_delete",
             }
             assert all("agent" not in tool["input"]["properties"] for tool in tools)
             for name, effect in (("serious", "allow"), ("casual", "allow"), ("temp", "deny")):
                 agent = get(f"/api/agent/{name}")["data"]
                 rules = [rule for rule in agent["permissions"] if rule["action"] == "memory_*"]
                 assert rules[-1]["effect"] == effect
+                delete_rules = [rule for rule in agent["permissions"] if fnmatchcase("memory_delete", rule["action"])]
+                assert delete_rules[-1]["effect"] == ("deny" if name == "temp" else "ask")
             # Evaluate the actual merged native V2 rules, including the global
             # deny and built-in overrides (last match wins).
             for name in ("build", "plan", "temp", "general", "explore"):
                 agent = get(f"/api/agent/{name}")["data"]
                 if name in ("build", "plan"):
                     assert not agent.get("system"), "Keep the provider's built-in coding prompt"
-                for action in ("memory_recall", "memory_search", "memory_read", "memory_record", "memory_update"):
+                for action in ("memory_recall", "memory_search", "memory_read", "memory_record", "memory_update", "memory_delete"):
                     for resource in ("shared", "private", "both"):
                         matching = [rule for rule in agent["permissions"]
                                     if fnmatchcase(action, rule["action"])
@@ -121,7 +129,8 @@ def test_chat_memory_plugin_loads_with_real_opencode(tmp_path):
                         allowed = resource == "shared" and (
                             name == "build" or name == "plan" and action in
                             ("memory_recall", "memory_search", "memory_read"))
-                        assert matching[-1]["effect"] == ("allow" if allowed else "deny"), (name, action, resource)
+                        expected = ("ask" if action == "memory_delete" else "allow") if allowed else "deny"
+                        assert matching[-1]["effect"] == expected, (name, action, resource)
             assert not (workspace / "MEMORY.md").exists()
             assert not (workspace / ".sessions/MEMORY.md").exists()
             assert not (workspace / ".sessions").exists()

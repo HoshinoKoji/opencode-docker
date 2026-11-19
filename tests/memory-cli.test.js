@@ -133,6 +133,32 @@ test("long-term JSON updates retain revisions and report conflicts on stderr", a
   expect(JSON.parse(call(["read", "MEMORY.md"]).stdout).results[0]).toEqual(raw);
 });
 
+test("CLI edits and deletes one named session in its selected space", async () => {
+  const { call } = await fixture();
+  const invoke = (name, payload) => call([name, "--space=private", "--input=-"], JSON.stringify(payload));
+  const recordResult = invoke("record", record);
+  expect(recordResult.status).toBe(0);
+  const { name, revision, id, logicalPath } = JSON.parse(recordResult.stdout);
+  const editResult = invoke("update", { name, content: "new CLI body", expectedRevision: revision });
+  expect(editResult.status).toBe(0);
+  const edit = JSON.parse(editResult.stdout);
+  expect(edit.revision).not.toBe(revision);
+  expect(call(["read", name]).stdout).not.toContain("new CLI body");
+  expect(call(["read", name, "--space=private"]).stdout).toContain("new CLI body");
+  const deletion = { name, expectedRevision: edit.revision };
+  expect(invoke("delete", deletion).stderr).toContain("requires SQLite schema v2");
+  expect(call(["upgrade-sync", "--space=private"]).status).toBe(0);
+  expect(invoke("delete", { name, expectedRevision: revision }).stderr).toContain("Memory changed");
+  for (const name of ["MEMORY.md", "INDEX.md", `../${deletion.name}`]) {
+    expect(invoke("delete", { ...deletion, name }).stderr).toContain("session record filename");
+  }
+  const deleted = invoke("delete", deletion);
+  expect(deleted.status).toBe(0);
+  expect(JSON.parse(deleted.stdout)).toEqual({ scope: "private", name, logicalPath, id, deleted: true });
+  expect(invoke("delete", deletion).status).toBe(1);
+  expect(JSON.parse(call(["recall", "--space=private"]).stdout).spaces[0].recent).toEqual([]);
+});
+
 test("invalid flags and JSON are rejected before any writes", async () => {
   const { root, call } = await fixture();
   const invalid = [
@@ -144,6 +170,10 @@ test("invalid flags and JSON are rejected before any writes", async () => {
     [["record", "--input=-"], JSON.stringify({ ...record, nextSteps: 12 })],
     [["record", "--input=-"], JSON.stringify({ ...record, topic: "../escape" })],
     [["update", "--input=-"], '{"content":"Missing revision"}'],
+    [["update", "--input=-"], '{"content":"x","expectedRevision":"r","summary":"not editable"}'],
+    [["delete", "--input=-"], '{"name":"2000-01-01-topic.md"}'],
+    [["delete", "--input=-"], '{"name":"2000-01-01-topic.md","expectedRevision":"r","section":"not allowed"}'],
+    [["delete", "--space=both", "--input=-"], '{"name":"2000-01-01-topic.md","expectedRevision":"r"}'],
     [["recall", "--limit", "2"], ""],
     [["search", "query", "--limit=21"], ""],
     [["read", "MEMORY.md", "--offset=-1"], ""],

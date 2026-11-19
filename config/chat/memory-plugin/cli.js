@@ -18,7 +18,8 @@ Commands:
   search QUERY              Search literal, whitespace-separated terms
   read NAME                 Read MEMORY.md, INDEX.md, or a returned filename
   record --input FILE|-      Save a topic from JSON and rebuild its index
-  update --input FILE|-      Update long-term memory from JSON with a revision
+  update --input FILE|-      Update the Markdown body of MEMORY.md or a session record
+  delete --input FILE|-      Delete a session record with a revision (SQLite v2 only)
 
 Options (also accept --flag=VALUE):
   --root DIR                Absolute SQLite destination/runtime root (or MEMORY_ROOT)
@@ -42,11 +43,17 @@ Record JSON:
   Optional string fields: decisions, nextSteps, preferences.
 Update JSON:
   {"content":"Complete merged Markdown body","expectedRevision":"from read"}
-  Optional JSON field section selects one section to replace, including its
+  Optional name selects an existing session record instead of MEMORY.md.
+  Update changes the body and updated_at; the stored summary stays unchanged.
+  Optional section selects one section to replace, including its
   unchanged heading title/level. Read every selected-section page first; for
   full updates read every whole-body page (omit --section). Section reads return the
   full-file revision and metadata; missing/duplicate titles fail explicitly.
   Recall reports missing summaries; use read MEMORY.md to retrieve details.
+Delete JSON:
+  {"name":"2026-01-01-topic.md","expectedRevision":"from read"}
+  Requires an existing session record and its current full revision.
+  SQLite v2 retains a tombstone and history; MEMORY.md and INDEX.md are protected.
 
 Successful operations print one JSON object to stdout. Errors print a JSON
 error to stderr: exit 2 for usage/input, 1 for an operation failure. No LLM or
@@ -74,6 +81,7 @@ const allowed = {
   read: ["root", "space", "limit", "offset", "section"],
   record: ["root", "space", "input", "request-id"],
   update: ["root", "space", "input"],
+  delete: ["root", "space", "input"],
 };
 
 function parse(args) {
@@ -103,7 +111,7 @@ function parse(args) {
     options[key] = value;
   }
   const command = positional.shift();
-  if (!Object.hasOwn(allowed, command)) usageError("Choose init, import, migrate, export, recall, search, read, record, or update. Use --help for usage.");
+  if (!Object.hasOwn(allowed, command)) usageError(`Choose ${Object.keys(allowed).join(", ")}. Use --help for usage.`);
   for (const key of Object.keys(options)) {
     if (key !== "backend" && !allowed[command].includes(key)) usageError(`--${key} is not supported by ${command}.`);
   }
@@ -111,7 +119,7 @@ function parse(args) {
   if (positional.length !== operands) usageError(`${command} requires ${operands} positional argument(s); quote a multi-word query.`);
   const space = options.space ?? "shared";
   if (!["shared", "private", "both"].includes(space)) usageError("--space must be shared, private, or both.");
-  const writing = command === "record" || command === "update";
+  const writing = ["record", "update", "delete"].includes(command);
   if (writing && space === "both") usageError("Write to one space at a time.");
   if (writing && !options.input) usageError(`${command} requires --input FILE or --input - for stdin.`);
   if (["import", "migrate"].includes(command) && !options.source) usageError(`${command} requires --source DIR.`);
@@ -135,8 +143,12 @@ async function inputJSON(filename, command) {
   let input;
   try { input = JSON.parse(raw); } catch { usageError("Input must be valid JSON."); }
   if (!input || typeof input !== "object" || Array.isArray(input)) usageError("Input must be a JSON object.");
-  const required = command === "record" ? ["topic", "goal", "conclusion", "details"] : ["content", "expectedRevision"];
-  const fields = command === "record" ? [...required, "decisions", "nextSteps", "preferences"] : [...required, "section"];
+  const [required, optional] = {
+    record: [["topic", "goal", "conclusion", "details"], ["decisions", "nextSteps", "preferences"]],
+    update: [["content", "expectedRevision"], ["name", "section"]],
+    delete: [["name", "expectedRevision"], []],
+  }[command];
+  const fields = [...required, ...optional];
   for (const [key, value] of Object.entries(input)) {
     if (!fields.includes(key)) usageError(`Unknown input field: ${key}. Select memory space with --space.`);
     if (typeof value !== "string") usageError(`${key} must be a string.`);

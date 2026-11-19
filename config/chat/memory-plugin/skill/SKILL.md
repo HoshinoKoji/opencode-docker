@@ -1,6 +1,6 @@
 ---
 name: workspace-memory
-description: Use when the user asks to recall or save persistent workspace memory through the workspace memory CLI or MCP bridge, or explicitly enables this workflow. Provides portable access to Markdown and YAML memory.
+description: Use when the user asks to recall, save, edit, or delete persistent workspace memory through the workspace memory CLI or MCP bridge, or explicitly enables this workflow. Provides portable access to Markdown and YAML memory.
 ---
 
 # Workspace Memory
@@ -8,7 +8,7 @@ description: Use when the user asks to recall or save persistent workspace memor
 Use the existing OpenCode memory tools when available. In another harness, use
 the standalone CLI. It needs Bun, not an OpenCode server or an LLM service.
 When the workspace-memory MCP server is configured, its `memory_recall`,
-`memory_search`, `memory_read`, `memory_record`, and `memory_update` tools provide
+`memory_search`, `memory_read`, `memory_record`, `memory_update`, and `memory_delete` tools provide
 the same storage workflow directly.
 
 ## MCP bridge
@@ -32,6 +32,8 @@ change between pages. `memory_record` requires a unique `requestId` selected
 before the first call; retry with the same ID and content after a lost response.
 `memory_update` requires `expectedRevision` and the complete Markdown body, or
 the complete selected section including its heading when `section` is supplied.
+Omit `name` for `MEMORY.md` or give an existing session filename.
+`memory_delete` takes the existing session filename and its current `expectedRevision`.
 Inspect `isError` before treating a call as successful. No separate CLI write or
 manual index rebuild is needed after a successful MCP call.
 
@@ -60,7 +62,8 @@ Review the README before administration; it is outside routine agent recording.
 Record results use `logicalPath` for the logical SQLite identifier and `name`
 for the `.md` document name; the body remains Markdown in SQLite. Physical
 database/backup paths appear only in administrative results. Both schema v1 and
-explicitly upgraded v2 support ordinary tools. `upgrade-sync --dry-run` and
+explicitly upgraded v2 support record and update; deletion requires v2.
+`upgrade-sync --dry-run` and
 `upgrade-sync` are operator administration with stopped writers and a v1 backup;
 ordinary tools never upgrade databases. Conflicts/restoration need future tooling.
 
@@ -112,15 +115,22 @@ transcript. Use a unique, non-secret request ID per record; reuse it for retries
   --input /path/to/record.json --request-id harness-session-topic-unique-id
 ```
 
-For whole-file `update`, first read the entire `MEMORY.md` body, including all truncated
-pages. Merge only enduring facts/preferences into its existing organization.
-Pass `content` (the complete updated Markdown body, without YAML) and
-`expectedRevision` from that read. Preserve relevant information; mark obsolete
-facts deprecated. On a revision conflict, read again and merge.
+For whole-file `update`, first read the entire target body, including all
+truncated pages. Omit `name` to update `MEMORY.md`; merge only enduring
+facts/preferences there and mark obsolete facts deprecated. To update an
+existing session record, include its exact `name`. Pass `content` (the complete
+updated Markdown body, without YAML) and `expectedRevision` from that read.
+The stored summary stays unchanged. On a stale revision, read again and merge.
 
 ```sh
 "$MEMORY_CLI" update --root "$MEMORY_ROOT" --space shared --input /path/to/update.json
 ```
+
+For `delete`, act only at the user's explicit request. First read the named
+session record, then pass `name` and its current `expectedRevision` in the JSON
+input. Use the same space for both operations. The space must already be SQLite
+v2. `MEMORY.md` and `INDEX.md` are protected. Deletion hides the record from
+normal results and export but retains its history; do not try to recreate it.
 
 Choose one space per write. Input cannot override identity/space; use the flag.
 The CLI maintains frontmatter, IDs, revisions, locks, and generated indexes.

@@ -5,8 +5,8 @@ import { lstat, mkdir } from "node:fs/promises";
 import { chmodSync } from "node:fs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { MemoryStore } from "./store.js";
-import { decode, legacyMetadata } from "./format.js";
+import { MemoryStore, sessionMetadata } from "./store.js";
+import { decode, legacyMetadata, SESSION_FILENAME } from "./format.js";
 import { SyncPrototype } from "./sync-prototype.js";
 
 const hash = (text) => createHash("sha256").update(text).digest("hex");
@@ -139,6 +139,53 @@ export class SQLiteMemoryStore extends MemoryStore {
   async rebuild(scope) { return this.relative(scope, "INDEX.md"); }
   async relocateShared() { /* SQLite never discovers or migrates Markdown. */ }
 
+  assertWritable(db, name, id = null) {
+    if (db?.query("PRAGMA user_version").get().user_version !== 2) return;
+    const blocked = db.query(`
+      SELECT v.deleted FROM sync_seed s JOIN sync_views v USING (id)
+      WHERE (s.name = ? OR s.id = ?) AND (v.deleted = 1 OR
+        EXISTS (SELECT 1 FROM sync_conflicts c WHERE c.document = s.id))
+      ORDER BY v.deleted DESC LIMIT 1
+    `).get(name, id);
+    if (blocked?.deleted) throw new Error(`Document is deleted; explicit restoration is required: ${name}.`);
+    if (blocked) throw new Error(`Document requires explicit conflict resolution; runtime writes are blocked: ${name}.`);
+  }
+
+  async sessionForWrite(scope, name, id) {
+    return this.connection(scope, (db) => {
+      this.assertWritable(db, name, id);
+      return this.rows(db).find((row) => row.name === name);
+    });
+  }
+
+  async delete(agent, { name, expectedRevision, scope = "default", share = false }) {
+    const [space] = this.scopes(agent, scope, true, share === true);
+    if (typeof name !== "string" || !SESSION_FILENAME.test(name)) {
+      throw new Error("Delete requires a session record filename without directories; MEMORY.md and INDEX.md are protected.");
+    }
+    if (typeof expectedRevision !== "string" || !/^[a-f0-9]{64}$/.test(expectedRevision)) {
+      throw new Error("Delete requires expectedRevision from a read of the session record.");
+    }
+    // Fail before opening a writer on an uninitialized or v1 space. Only the
+    // explicit upgrade can enable deletion and its durable sync history.
+    await this.connection(space, (db) => {
+      if (db?.query("PRAGMA user_version").get().user_version !== 2) {
+        throw new Error("Session record deletion requires SQLite schema v2. An operator can use upgrade-sync with all writers stopped.");
+      }
+    });
+    return this.locked(async () => {
+      const row = await this.sessionForWrite(space, name);
+      if (!row) throw new Error(`Session record not found: ${name}.`);
+      if (row.revision !== expectedRevision) throw new Error(`Memory changed since it was read. Read ${name} again before deleting.`);
+      sessionMetadata(space, name, decode(row.raw), row.id);
+      const sync = new SyncPrototype(this.transaction.getStore().db);
+      sync.commit(sync.prepare({ id: randomUUID(), document: row.id, kind: "delete" }));
+      // The tombstone and its retained branch snapshot live in sync_versions;
+      // the legacy history has no deleted flag and remains untouched.
+      return { scope: space, name, logicalPath: this.relative(space, name), id: row.id, deleted: true };
+    }, space);
+  }
+
   async atomic(relative, raw) {
     const { scope, name } = this.location(relative);
     const active = this.transaction.getStore();
@@ -150,11 +197,11 @@ export class SQLiteMemoryStore extends MemoryStore {
     const operation = randomUUID();
     const v2 = db.query("PRAGMA user_version").get().user_version === 2;
     if (v2) {
+      this.assertWritable(db, name, metadata.id);
       const sync = new SyncPrototype(db);
       const seed = db.query("SELECT id FROM sync_seed WHERE name = ?").get(name);
       if (seed && seed.id !== metadata.id) throw new Error("Document metadata identity changed.");
       const view = seed ? sync.view(seed.id) : null;
-      if (view?.conflicts.length || view?.deleted) throw new Error("Document requires explicit conflict resolution or restoration; runtime writes are blocked.");
       if (view?.raw === raw) return;
       sync.commit(sync.prepare({ id: operation, document: metadata.id, name,
         kind: seed ? "full" : "create", content: raw }));

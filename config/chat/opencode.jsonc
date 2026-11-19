@@ -13,7 +13,8 @@
   "agents": {
     "build": {
       "permissions": [
-        { "action": "memory_*", "resource": "shared", "effect": "allow" }
+        { "action": "memory_*", "resource": "shared", "effect": "allow" },
+        { "action": "memory_delete", "resource": "shared", "effect": "ask" }
       ]
     },
     "plan": {
@@ -22,7 +23,8 @@
         { "action": "memory_search", "resource": "shared", "effect": "allow" },
         { "action": "memory_read", "resource": "shared", "effect": "allow" },
         { "action": "memory_record", "resource": "*", "effect": "deny" },
-        { "action": "memory_update", "resource": "*", "effect": "deny" }
+        { "action": "memory_update", "resource": "*", "effect": "deny" },
+        { "action": "memory_delete", "resource": "*", "effect": "deny" }
       ]
     }
   },

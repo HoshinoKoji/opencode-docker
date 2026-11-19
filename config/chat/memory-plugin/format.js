@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 export const digest = (text) => createHash("sha256").update(text).digest("hex");
 export const oneLine = (text = "") => text.replace(/[\r\n|]+/g, " ").trim();
+export const SESSION_FILENAME = /^\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:-[a-z0-9]+)*\.md$/;
 
 export function decode(text) {
   if (!/^(?:\uFEFF)?---\r?\n/.test(text)) return { metadata: null, body: text };

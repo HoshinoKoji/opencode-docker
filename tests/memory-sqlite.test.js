@@ -9,11 +9,11 @@ import { createMemoryStore } from "../config/chat/memory-plugin/backend.js";
 import { ExternalMemoryStore } from "../config/chat/memory-mcp/policy.js";
 import { run } from "../config/chat/memory-plugin/cli.js";
 import plugin from "../config/chat/memory-plugin/index.js";
-import { encode } from "../config/chat/memory-plugin/format.js";
+import { digest, encode } from "../config/chat/memory-plugin/format.js";
 import { MemoryStore } from "../config/chat/memory-plugin/store.js";
 import { upgradeSync, syncStatus } from "../config/chat/memory-plugin/upgrade.js";
 import { SyncPrototype } from "../config/chat/memory-plugin/sync-prototype.js";
-import { exportMarkdown } from "../config/chat/memory-plugin/transfer.js";
+import { exportMarkdown, importMarkdown } from "../config/chat/memory-plugin/transfer.js";
 
 const directories = [];
 async function fixture() {
@@ -129,6 +129,77 @@ for (const schema of [1, 2]) {
   });
 }
 
+for (const schema of [1, 2]) test(`SQLite v${schema}: session section and whole-body edits preserve metadata and history`, async () => {
+  const root = await fixture(), store = createMemoryStore(root);
+  if (schema === 2) {
+    await store.init("shared");
+    await upgradeSync({ root });
+  }
+  const saved = await store.record("build", { ...input, preferences: "recorded preference" }, "named-edit");
+  const { name } = saved;
+  const before = await read(store, { name });
+  const section = await read(store, { name, section: "Details" });
+  expect(section.revision).toBe(before.revision);
+  for (const input of [
+    { name: "../" + name, content: "invalid", expectedRevision: section.revision },
+    { name: "INDEX.md", content: "invalid", expectedRevision: section.revision },
+    { name: "2001-01-01-missing.md", content: "invalid", expectedRevision: digest("") },
+    { name, section: "Details", content: "## Renamed\ninvalid", expectedRevision: section.revision },
+    { name, content: encode(section.metadata, "invalid"), expectedRevision: section.revision },
+  ]) await expect(store.update("build", input)).rejects.toThrow();
+  const edited = await store.update("build", { name, section: "Details", content: "## Details\nupdated-marker", expectedRevision: section.revision });
+  expect(edited.name).toBe(name);
+  expect(edited.section).toBe("Details");
+  expect((await read(store, { name })).text).toBe("# synthetic\n\n## Goal\nContract\n\n## Details\nupdated-marker\n\n");
+  await expect(store.update("build", { name, content: "stale", expectedRevision: before.revision })).rejects.toThrow("Memory changed");
+  await expect(store.record("build", { ...input, preferences: "recorded preference" }, "named-edit")).rejects.toThrow("different content");
+  expect((await store.search("build", { query: "updated-marker" })).matches).toBe(1);
+  const whole = await store.update("build", { name, content: "# Rewritten\nwhole-marker", expectedRevision: edited.revision });
+  const current = await read(store, { name });
+  expect(current.revision).toBe(whole.revision);
+  expect(current.text).toBe("# Rewritten\nwhole-marker\n");
+  expect(current.metadata).toEqual({ ...before.metadata, updated_at: current.metadata.updated_at });
+  expect((await store.recall("build")).spaces[0].recent[0]).toContain("Saved | recorded preference");
+  expect((await read(store, { name: "INDEX.md" })).text).toContain("Saved | recorded preference");
+  await store.connection("shared", (db) => {
+    const versions = db.query("SELECT * FROM versions WHERE document_id = ?").all(saved.id);
+    expect(versions.map((row) => row.revision)).toEqual([saved.revision, edited.revision, whole.revision]);
+    expect(versions.map((row) => row.parent)).toEqual([null, versions[0].operation_id, versions[1].operation_id]);
+    expect(db.query("PRAGMA user_version").get().user_version).toBe(schema);
+    const outbox = schema === 2 ? new SyncPrototype(db).pending() : db.query("SELECT * FROM outbox").all();
+    expect(outbox).toHaveLength(3);
+  });
+  if (schema === 1) {
+    await expect(store.delete("build", { name, expectedRevision: current.revision })).rejects.toThrow("requires SQLite schema v2");
+    expect((await syncStatus({ root })).schema).toBe(1);
+    expect(await read(store, { name })).toEqual(current);
+  }
+});
+
+test("imported plain records keep legacy identity, summary and date; unknown names are never created", async () => {
+  const root = await fixture(), store = createMemoryStore(root);
+  const source = await fixture(), name = "2001-02-03-legacy-topic.md", empty = "2001-02-03-empty.md";
+  const input = "# Original title\n- Conclusion / deliverables: Original summary\n## Details\nOld details\n";
+  await mkdir(path.join(source, ".sessions"));
+  await writeFile(path.join(source, ".sessions", name), input);
+  await writeFile(path.join(source, ".sessions", empty), "");
+  await expect(store.delete("build", { name, expectedRevision: digest(input) })).rejects.toThrow("requires SQLite schema v2");
+  expect(await readdir(root)).toEqual([]);
+  await importMarkdown({ root, source });
+  const legacyId = await store.connection("shared", (db) => db.query("SELECT id FROM documents WHERE name = ?").get(name).id);
+  expect((await read(store, { name })).metadata).toBeNull();
+  await upgradeSync({ root });
+  const changed = await store.update("build", { name, content: "# Revised title\nNew details", expectedRevision: digest(input) });
+  expect((await read(store, { name })).metadata).toMatchObject({
+    id: legacyId, type: "session", summary: "Original summary", title: "Original title",
+    date: "2001-02-03", created_at: "2001-02-03T00:00:00.000Z",
+  });
+  expect((await store.delete("build", { name, expectedRevision: changed.revision })).id).toBe(legacyId);
+  expect((await store.delete("build", { name: empty, expectedRevision: digest("") })).deleted).toBe(true);
+  expect(await readFile(path.join(source, ".sessions", name), "utf8")).toBe(input);
+  for (const dryRun of [true, false]) await expect(importMarkdown({ root, source, dryRun })).rejects.toThrow("deleted");
+});
+
 test("SQLite: atomic history/outbox rollback and concurrent revision checks", async () => {
   const root = await fixture();
   const store = createMemoryStore(root, { backend: "sqlite" });
@@ -207,6 +278,18 @@ for (const schema of [1, 2]) test(`SQLite v${schema}: plugin and CLI use one exp
   expect(changed.text).toContain("## Last\nkeep");
   expect(changed.metadata.id).toBe(selected.metadata.id);
   await expect(b.update.execute({ content: "stale", expectedRevision: initial.revision }, context)).rejects.toThrow("Memory changed");
+  const record = JSON.parse((await a.read.execute({ name: saved.name }, context)).content).results[0];
+  const edited = JSON.parse((await b.update.execute({ name: saved.name, content: "edited plugin record", expectedRevision: record.revision }, context)).content);
+  expect((await run(["search", "edited plugin", "--root", root], {})).result.results[0].name).toBe(saved.name);
+  const deletion = { name: saved.name, expectedRevision: edited.revision };
+  if (schema === 2) {
+    expect(JSON.parse((await b.delete.execute(deletion, context)).content)).toEqual({
+      scope: "shared", name: saved.name, logicalPath: saved.logicalPath, id: saved.id, deleted: true,
+    });
+    await expect(a.record.execute(input, context)).rejects.toThrow("deleted");
+  } else {
+    await expect(b.delete.execute(deletion, context)).rejects.toThrow("requires SQLite schema v2");
+  }
   await expect(b.record.execute(input, { ...context, agent: "plan" })).rejects.toThrow("read-only");
   await expect(b.read.execute({ name: "MEMORY.md", scope: "private" }, context)).rejects.toThrow("shared memory only");
   await expect(plugin.setup({ options: { backend: "sqlite" }, location: { project: { directory: root } } })).rejects.toThrow("absolute");
@@ -293,6 +376,115 @@ test("v2 runtime sees received records/edits, exports projections, and blocks co
     sync.push([{ ...sync.prepare({ id: "delete", document: before.metadata.id, kind: "delete" }), base: [] }]);
     expect((await read(store)).text).toBe("");
     await expect(store.update("build", { content: "restore", expectedRevision: (await read(store)).revision })).rejects.toThrow();
+  } finally { db.close(); }
+});
+
+test("public v2 tombstones retain history, roll back on failure, and propagate through a relay without resurrection", async () => {
+  const root = await fixture(), store = createMemoryStore(root);
+  const saved = await store.record("build", input, "relay-record");
+  // Seed this operation under an older filename to exercise retry identity
+  // lookup even when the retry generates a different UTC filename.
+  const name = "2000-01-01-relay-record.md";
+  await store.locked(() => {
+    store.transaction.getStore().db.query("UPDATE documents SET name = ? WHERE id = ?").run(name, saved.id);
+  }, "shared");
+  await upgradeSync({ root });
+  const seed = await store.connection("shared", (db) => db.serialize());
+  async function replica() {
+    const other = await fixture();
+    await mkdir(path.join(other, ".memory-db"));
+    await writeFile(path.join(other, ".memory-db/shared.sqlite"), seed);
+    return createMemoryStore(other);
+  }
+  const remote = await replica(), relay = await replica();
+  const before = await read(store, { name });
+  const changed = await store.update("build", { name, content: "# Retained history\nchanged-marker", expectedRevision: before.revision });
+  const deletion = { name, expectedRevision: changed.revision };
+  for (const badName of ["MEMORY.md", "INDEX.md", `../${name}`, `${name}\n`]) {
+    await expect(store.delete("build", { ...deletion, name: badName })).rejects.toThrow("session record filename");
+  }
+  await expect(store.delete("build", { name })).rejects.toThrow("expectedRevision");
+  await expect(store.delete("build", { ...deletion, expectedRevision: before.revision })).rejects.toThrow("Memory changed");
+  await expect(store.delete("build", { ...deletion, name: "2000-01-01-missing.md" })).rejects.toThrow("not found");
+  const snapshot = () => store.connection("shared", (db) =>
+    ["documents", "versions", "outbox", "sync_seed", "sync_operations", "sync_views", "sync_sections", "sync_outbox", "sync_versions", "sync_log"]
+      .map((table) => db.query(`SELECT * FROM ${table}`).all()));
+  const state = await snapshot();
+  const db = await store.open("shared", true);
+  try {
+    db.exec(`CREATE TRIGGER fail_delete BEFORE INSERT ON sync_log
+      BEGIN SELECT RAISE(ABORT, 'synthetic sync failure'); END;`);
+    await expect(store.delete("build", deletion)).rejects.toThrow("synthetic sync failure");
+    expect(await snapshot()).toEqual(state);
+    db.exec("DROP TRIGGER fail_delete");
+  } finally { db.close(); }
+  expect((await store.delete("build", deletion)).deleted).toBe(true);
+  expect((await snapshot()).slice(0, 4)).toEqual(state.slice(0, 4));
+  const pending = await store.connection("shared", (db) => {
+    const sync = new SyncPrototype(db);
+    const ops = sync.pending();
+    const edit = ops.find((op) => op.kind === "full"), deleted = ops.find((op) => op.kind === "delete");
+    expect(deleted).toMatchObject({ document: saved.id, base: [edit.id], content: null });
+    const tombstone = db.query("SELECT raw, deleted FROM sync_versions WHERE id = ?").get(deleted.id);
+    expect(tombstone.deleted).toBe(1);
+    expect(tombstone.raw).toContain("changed-marker");
+    return ops;
+  });
+  const relayDb = await relay.open("shared", true), remoteDb = await remote.open("shared", true);
+  try {
+    const bridge = new SyncPrototype(relayDb), receiver = new SyncPrototype(remoteDb);
+    const first = bridge.push(pending);
+    expect(bridge.push(pending)).toEqual(first);
+    const firstPage = bridge.pull("relay", 0, 1);
+    receiver.receive(firstPage);
+    expect((await read(remote, { name })).text).toContain("changed-marker");
+    const lastPage = bridge.pull("relay", 1);
+    receiver.receive(lastPage);
+    receiver.receive(firstPage);
+    receiver.receive(lastPage);
+    expect(receiver.view(saved.id).deleted).toBe(1);
+  } finally { relayDb.close(); remoteDb.close(); }
+  for (const replica of [store, remote]) {
+    expect((await read(replica, { name })).text).toBe("");
+    expect((await read(replica, { name: "INDEX.md" })).text).not.toContain("relay-record");
+    expect((await replica.recall("build")).spaces[0].recent).toEqual([]);
+    expect((await replica.search("build", { query: "changed-marker" })).matches).toBe(0);
+    await expect(replica.record("build", input, "relay-record")).rejects.toThrow("deleted");
+    await expect(replica.update("build", { name, content: "resurrect", expectedRevision: digest("") })).rejects.toThrow("deleted");
+    await expect(replica.delete("build", deletion)).rejects.toThrow("deleted");
+    const destination = path.join(await fixture(), "export");
+    expect((await exportMarkdown({ root: replica.root, destination })).documents).toBe(0);
+    expect(await readdir(destination)).toEqual([]);
+  }
+  const source = await fixture();
+  await mkdir(path.join(source, ".sessions"));
+  const sourceName = path.join(source, ".sessions", name);
+  const renamed = path.join(source, ".sessions", "2000-01-01-other.md");
+  const original = encode(before.metadata, before.text);
+  await writeFile(sourceName, "# Different ID, tombstoned name");
+  await expect(importMarkdown({ root, source, dryRun: true })).rejects.toThrow("deleted");
+  await rm(sourceName);
+  await writeFile(renamed, original);
+  await expect(importMarkdown({ root, source })).rejects.toThrow("deleted");
+  expect(await readFile(renamed, "utf8")).toBe(original);
+});
+
+test("public session deletion and edits freeze conflicted v2 documents", async () => {
+  const root = await fixture(), store = createMemoryStore(root);
+  const { name, id } = await store.record("build", input, "conflicted-session");
+  await upgradeSync({ root });
+  const db = await store.open("shared", true), sync = new SyncPrototype(db);
+  try {
+    const raw = sync.view(id).raw;
+    const left = sync.prepare({ id: "left", document: id, kind: "full", content: raw + "left\n" });
+    const right = sync.prepare({ id: "right", document: id, kind: "full", content: raw + "right\n" });
+    sync.push([left, right]);
+    const { revision } = await read(store, { name });
+    await expect(store.delete("build", { name, expectedRevision: revision })).rejects.toThrow("conflict resolution");
+    await expect(store.update("build", { name, content: "edit", expectedRevision: revision })).rejects.toThrow("conflict resolution");
+    await expect(store.record("build", input, "conflicted-session")).rejects.toThrow("conflict resolution");
+    expect(sync.view(id)).toMatchObject({ raw, deleted: 0, conflicts: [{ document: id, left_id: "left", right_id: "right" }] });
+    expect(sync.pending()).toEqual([]);
   } finally { db.close(); }
 });
 

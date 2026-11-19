@@ -3,12 +3,19 @@ import { copyFile, lstat, mkdir, readFile, readdir, rename, rm, unlink, writeFil
 import { constants } from "node:fs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { decode, encode, legacyMetadata, oneLine } from "./format.js";
+import { decode, encode, legacyMetadata, oneLine, SESSION_FILENAME } from "./format.js";
 import { descriptor, overview, sections, replaceSection } from "./sections.js";
 
 const revision = (text) => createHash("sha256").update(text).digest("hex");
 const roots = { shared: ".sessions", private: ".sessions/casual" };
 const limitText = (text, limit) => ({ text: text.slice(0, limit), truncated: text.length > limit });
+
+export function sessionMetadata(scope, name, document, id) {
+  const metadata = document.metadata ?? legacyMetadata(scope, name, document.body);
+  if (metadata.type !== "session") throw new Error(`Expected session metadata in ${name}.`);
+  if (document.metadata && id !== undefined && metadata.id !== id) throw new Error("Document metadata identity changed.");
+  return id === undefined ? metadata : { ...metadata, id };
+}
 
 export class MemoryStore {
   constructor(root) {
@@ -25,7 +32,7 @@ export class MemoryStore {
     if (scope === "both" && writing) throw new Error("Write to one memory space at a time.");
     if (agent !== "casual" && scope !== "shared") throw new Error(`${agent} uses shared memory only.`);
     if (writing && agent === "casual" && scope === "shared" && !share) {
-      throw new Error("Shared writes from casual require share=true and an explicit user request to share.");
+      throw new Error("Shared writes from casual require share=true and explicit user authorization for the shared write.");
     }
     return scope === "both" ? ["shared", "private"] : [scope];
   }
@@ -33,7 +40,7 @@ export class MemoryStore {
   relative(scope, name) {
     if (!(scope in roots)) throw new Error("Invalid memory scope.");
     if (name === "MEMORY.md") return path.join(roots[scope], name);
-    if (name !== "INDEX.md" && !/^\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:-[a-z0-9]+)*\.md$/.test(name)) {
+    if (name !== "INDEX.md" && (typeof name !== "string" || !SESSION_FILENAME.test(name))) {
       throw new Error("Use a memory filename returned by recall/search/record, without directories.");
     }
     return path.join(scope === "shared" ? ".sessions" : roots.private, name);
@@ -174,7 +181,7 @@ export class MemoryStore {
       if (error.code !== "ENOENT") throw error;
     }
     return ["MEMORY.md", ...entries.filter((entry) => entry.isFile() &&
-      /^\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:-[a-z0-9]+)*\.md$/.test(entry.name)).map((entry) => entry.name).sort().reverse()];
+      SESSION_FILENAME.test(entry.name)).map((entry) => entry.name).sort().reverse()];
   }
 
   async entries(scope) {
@@ -184,8 +191,7 @@ export class MemoryStore {
       const raw = await this.text(this.relative(scope, name));
       if (!raw) continue;
       const document = decode(raw);
-      const metadata = document.metadata ?? legacyMetadata(scope, name, document.body);
-      if (metadata.type !== "session") throw new Error(`Expected session metadata in ${name}.`);
+      const metadata = sessionMetadata(scope, name, document);
       if (ids.has(metadata.id)) throw new Error(`Duplicate memory ID in ${scope}: ${metadata.id}. Resolve the synced file conflict first.`);
       ids.add(metadata.id);
       entries.push({ name, metadata });
@@ -287,40 +293,52 @@ export class MemoryStore {
       const prior = (await this.entries(scope)).find((entry) => entry.metadata.id === metadata.id);
       const savedName = prior?.name ?? name;
       const relative = this.relative(scope, savedName);
-      const existing = await this.text(relative);
-      const previous = decode(existing);
-      // Reuse timestamps on an identical retry; preserve additional metadata.
-      const content = encode({ ...metadata, ...previous.metadata }, body);
-      if (existing && (previous.body !== body || previous.metadata?.summary !== metadata.summary ||
-          (previous.metadata?.preferences ?? "") !== (metadata.preferences ?? ""))) {
-        throw new Error("This call already saved different content; read the existing record before retrying.");
+      const existing = await this.sessionForWrite(scope, savedName, metadata.id);
+      if (existing) {
+        const previous = decode(existing.raw);
+        if (previous.body !== body || previous.metadata?.id !== metadata.id ||
+            previous.metadata.summary !== metadata.summary ||
+            (previous.metadata.preferences ?? "") !== (metadata.preferences ?? "")) {
+          throw new Error("This call already saved different content; read the existing record before retrying.");
+        }
       }
-      if (!existing) await this.atomic(relative, content);
+      const raw = existing?.raw ?? encode(metadata, body);
+      if (!existing) await this.atomic(relative, raw);
       await this.rebuild(scope);
-      return { scope, name: savedName, logicalPath: relative, id: previous.metadata?.id ?? metadata.id, revision: revision(existing || content) };
+      return { scope, name: savedName, logicalPath: relative, id: metadata.id, revision: revision(raw) };
     }, scope);
   }
 
-  async update(agent, { content, expectedRevision, section, scope = "default", share = false }) {
+  async sessionForWrite(scope, name) {
+    const raw = await this.text(this.relative(scope, name));
+    return (raw || (await this.names(scope)).includes(name)) ? { raw } : null;
+  }
+
+  async update(agent, { name = "MEMORY.md", content, expectedRevision, section, scope = "default", share = false }) {
     const [space] = this.scopes(agent, scope, true, share === true);
+    const relative = this.relative(space, name);
+    if (name === "INDEX.md") throw new Error("INDEX.md is derived and cannot be updated.");
     if (typeof content !== "string" || !content.trim() || content.length > 100000) {
-      throw new Error("Long-term memory must be non-empty and at most 100000 characters.");
+      throw new Error("Memory content must be non-empty and at most 100000 characters.");
     }
     return this.locked(async () => {
-      const relative = this.relative(space, "MEMORY.md");
-      const previous = await this.text(await this.source(space, "MEMORY.md"));
-      if (revision(previous) !== expectedRevision) throw new Error("Memory changed since it was read. Read MEMORY.md again and merge your changes.");
+      const longTerm = name === "MEMORY.md";
+      const session = longTerm ? null : await this.sessionForWrite(space, name);
+      if (!longTerm && !session) throw new Error(`Session record not found: ${name}.`);
+      const previous = longTerm ? await this.text(await this.source(space, name)) : session.raw;
+      if (revision(previous) !== expectedRevision) throw new Error(`Memory changed since it was read. Read ${name} again and merge your changes.`);
       const document = decode(previous);
-      if (decode(content).metadata) throw new Error("Pass only the Markdown body to update; the plugin preserves metadata automatically.");
+      if (decode(content.trim()).metadata) throw new Error("Pass only the Markdown body to update; the plugin preserves metadata automatically.");
       const now = new Date().toISOString();
-      const metadata = await this.updateMetadata(space, document, now);
-      if (metadata.type !== "long_term") throw new Error("MEMORY.md must have long_term metadata.");
+      const metadata = longTerm ? await this.updateMetadata(space, document, now) : sessionMetadata(space, name, document, session.id);
+      if (longTerm && metadata.type !== "long_term") throw new Error("MEMORY.md must have long_term metadata.");
       const body = section === undefined ? `${content.trim()}\n` : replaceSection(document.body, section, content);
-      if (body.length > 100000) throw new Error("Long-term memory must be at most 100000 characters.");
+      if (body.length > 100000) throw new Error("Memory content must be at most 100000 characters.");
       const text = encode({ ...metadata, updated_at: now }, body);
-      if (space === "shared") await this.relocateShared();
+      if (longTerm && space === "shared") await this.relocateShared();
       await this.atomic(relative, text);
-      return { scope: space, name: "MEMORY.md", ...(section === undefined ? {} : { section }), revision: revision(text) };
+      if (!longTerm) await this.rebuild(space);
+      return { scope: space, name, ...(section === undefined ? {} : { section }), revision: revision(text) };
     }, space);
   }
 

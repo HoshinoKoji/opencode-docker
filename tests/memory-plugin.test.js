@@ -443,8 +443,10 @@ test("plugin uses execution context identity and honors host permission failures
       if (denied) throw new Error("permission denied");
     } },
   });
-  expect(tools.size).toBe(5);
+  expect(tools.size).toBe(6);
   expect(tools.get("read").input.properties.section.type).toBe("string");
+  expect(tools.get("delete").input.required).toEqual(["name", "expectedRevision"]);
+  expect(tools.get("delete").input.additionalProperties).toBe(false);
   const context = { agent: "casual", sessionID: "session", messageID: "message", id: "call" };
   const output = await tools.get("record").execute({ ...input, agent: "serious" }, context);
   expect(JSON.parse(output.content).scope).toBe("private");
@@ -453,6 +455,14 @@ test("plugin uses execution context identity and honors host permission failures
   const selected = JSON.parse((await tools.get("read").execute({ name: JSON.parse(output.content).name, scope: "private", section: "Details" }, context)).content).results[0];
   expect(selected.text).toBe(`## Details\n${input.details}\n`);
   expect(selected.metadata.topic).toBe(input.topic);
+  const deletion = { name: selected.name, expectedRevision: selected.revision };
+  await expect(tools.get("delete").execute(deletion, { ...context, agent: "temp" })).rejects.toThrow("available only");
+  await expect(tools.get("delete").execute(deletion, { ...context, agent: "plan" })).rejects.toThrow("read-only");
+  await expect(tools.get("delete").execute({ ...deletion, scope: "shared" }, context)).rejects.toThrow("share=true");
+  await expect(tools.get("delete").execute({ ...deletion, scope: "private" }, { ...context, agent: "build" })).rejects.toThrow("shared memory only");
+  await expect(tools.get("delete").execute({ ...deletion, scope: "both" }, context)).rejects.toThrow("one memory space");
+  await expect(tools.get("delete").execute({ ...deletion, agent: "serious" }, context)).rejects.toThrow("Unknown input field");
+  await expect(tools.get("update").execute({ ...deletion, content: "no", summary: "no" }, context)).rejects.toThrow("Unknown input field");
   await expect(tools.get("recall").execute({}, { ...context, agent: "temp" })).rejects.toThrow();
   await tools.get("recall").execute({}, { ...context, agent: "plan" });
   expect(assertions.at(-1).resources).toEqual(["shared"]);
@@ -464,5 +474,9 @@ test("plugin uses execution context identity and honors host permission failures
   expect(assertions.at(-1).resources).toEqual(["shared"]);
   denied = true;
   await expect(tools.get("update").execute({ content: "no", expectedRevision: "no" }, context)).rejects.toThrow("permission denied");
+  await expect(tools.get("delete").execute(deletion, context)).rejects.toThrow("permission denied");
+  expect(assertions.at(-1)).toMatchObject({ action: "memory_delete", resources: ["private"] });
+  await expect(tools.get("delete").execute({ ...deletion, scope: "shared", share: true }, context)).rejects.toThrow("permission denied");
+  expect(assertions.at(-1)).toMatchObject({ action: "memory_delete", resources: ["shared"] });
   expect((await createMemoryStore(root).read("casual", { name: "MEMORY.md", scope: "private" })).results[0].text).toBe("");
 });

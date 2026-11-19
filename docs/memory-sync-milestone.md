@@ -17,7 +17,7 @@ commit or push was performed.
   as a device and as the local SQLite relay in the simulator.
 
 `SQLiteMemoryStore` now uses the engine for v2 ordinary writes. Both versions
-support plugin, CLI and MCP. New databases still initialize as v1. No runtime open
+support plugin, CLI and MCP; public session deletion requires v2. New databases still initialize as v1. No runtime open
 or ordinary write upgrades a database. `synthetic: true` remains a fixture assertion,
 not a sandbox. Operators use only the explicit `upgrade-sync` command below.
 
@@ -84,31 +84,40 @@ every new operation to that seed; independently imported databases require futur
 bootstrap/reconciliation tooling. Existing historical versions are not replayed
 to the relay. Runtime reads/search/recall/index and export use `sync_views` joined
 to logical names in `sync_seed`, excluding tombstones. They see engine-received edits
-and newly created records. Local runtime writes also append legacy `versions` and
+and newly created records. Local runtime creation and updates append legacy `versions` and
 refresh `documents`, using the same operation ID as the sync operation, in the same
 transaction. These legacy tables are compatibility history, not the v2 read source;
-received operations retain their authoritative snapshots in `sync_versions`.
+received operations and public deletions retain their authoritative snapshots in
+`sync_versions`. Deletion leaves the compatibility tables intact.
 The old `outbox` is frozen historical state; new pending operations use `sync_outbox`.
 
 ## Ordinary runtime writes and result naming
 
-Public inputs and policy boundaries are unchanged: authorization precedes opening
+Authorization precedes opening
 spaces; the absolute root is independent of worktree/cwd. `record` returns
 `logicalPath` instead of `path`; `name` keeps its `.md` suffix and the stored body
 remains Markdown. Administrative paths and legacy physical backup-manifest fields
 keep their physical meaning. Update metadata/IDs and whole-raw SHA-256 revisions
 are preserved, including exact-section replacement and stale-revision rejection.
+`update` accepts an existing session filename or defaults to `MEMORY.md`.
+Session edits preserve the stored summary; `updated_at` is refreshed.
 
 New documents produce `create` operations with a validated logical `name`, stable
 document ID and empty causal base. Empty seeds derive from that ID; the operation
 carries the initial raw document and replicates creation. Name/identity collisions
-fail atomically. Retries reuse the saved record without appending operations.
+fail atomically. Retries reuse the saved record without appending operations when
+their payload still matches; a retry that differs after a body edit fails.
 Local modifications currently compile to **full-document** operations, even for
 public section updates, to preserve frontmatter timestamps and custom metadata
 atomically. Thus runtime edits to disjoint sections on separate devices can conflict;
 only explicit engine section operations currently get disjoint-subtree merging.
 This conservative boundary is deliberate until metadata-aware section operations
-are designed. Conflicts and tombstones block ordinary updates/record replacement.
+are designed. Conflicts and tombstones block ordinary writes. The public
+`delete` operation accepts only an existing session record with its current full
+revision. Its sync operation, branch snapshot, projection and outbox commit
+together. The tombstoned name and ID remain reserved against local record
+retries and imports. Markdown export contains only visible documents and does
+not carry tombstones when imported into a fresh database.
 `sync-status` reports pending count, conflict operation IDs, tombstones and cursor.
 It is read-only CLI administration, not an agent/MCP sync tool.
 

@@ -65,8 +65,10 @@ async function sourceDocuments(root, scope) {
 }
 
 function validateDestination(db, documents, store) {
+  const rows = store.rows(db);
   for (const doc of documents) {
-    const prior = store.rows(db).filter((row) => row.name === doc.name || row.id === doc.id);
+    store.assertWritable(db, doc.name, doc.id);
+    const prior = rows.filter((row) => row.name === doc.name || row.id === doc.id);
     if (prior.some((row) => row.name !== doc.name || row.id !== doc.id || row.raw !== doc.raw)) {
       throw new Error(`Destination conflict: ${doc.name}`);
     }
