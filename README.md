@@ -660,8 +660,12 @@ SQLite stores plaintext in `.memory-db/shared.sqlite` and
 `.memory-db/private.sqlite` under that root, creating each only on its first
 write. It preserves tool scope permissions, stable IDs, metadata, pagination,
 section updates, retry behavior and full-document revisions. INDEX remains
-derived. Returned record paths are logical compatibility paths, not Markdown
-files. Reads of a missing SQLite space return empty memory without importing any
+derived. Record results return `logicalPath` (for example `.sessions/2026-01-01-topic.md`)
+and `name` (the `.md` logical document name); the Markdown body lives in SQLite.
+The former record-result `path` key has been removed. Administrative `databasePath`
+and `backupPath` identify actual SQLite files; import/export source/destination and
+legacy backup-manifest `path` fields remain physical paths.
+Reads of a missing SQLite space return empty memory without importing any
 Markdown files. `init` is idempotent and initializes only selected spaces. For
 ergonomics, ordinary writes may also initialize an empty space; initialization
 never imports existing Markdown. Reads of absent spaces create no databases.
@@ -702,14 +706,42 @@ Export writes current raw documents into canonical Markdown paths in a new
 directory; it omits derived indexes and database history. Use that snapshot with
 a legacy Markdown reader for rollback, or import it into a fresh SQLite root.
 Preserve database history with a separate consistent SQLite backup (stop writers
-before copying database files and their WAL sidecars). No real memory migration
-or deployment has been performed by this implementation.
+before copying database files and their WAL sidecars).
 
-This milestone includes WAL transactions, whole-document history and atomic
-outbox groundwork. Sync, stable section identities, encryption
-and database backup commands are deferred. Local storage and the future sync process are
-trusted plaintext; optional encryption will apply at upload/download boundaries.
-See [architecture, references and limitations](docs/memory-sqlite-milestone.md).
+#### Opt-in local sync-state integration (schema v2)
+
+Plugin/CLI/MCP support both v1 and v2. New databases initialize as v1 and ordinary
+reads/writes never upgrade them. After an explicit upgrade, ordinary record/update
+and imports atomically persist sync operations, branch snapshots, stable section
+IDs, projections and the sync outbox. Runtime reads and exports use the current
+projection, including received changes and tombstones. Existing v1 history and
+pending outbox entries are retained. Runtime edits use conservative whole-document
+operations; heading IDs survive unchanged outlines, while structural rewrites
+start a new identity epoch. Section updates still preserve sibling text and metadata.
+
+First install this version for **every writer** and stop all writers, including
+already-loaded old plugins and MCP servers. Then, for each authorized space:
+
+```bash
+./memory.sh sync-status --root "$MEMORY_ROOT" --space shared
+./memory.sh upgrade-sync --root "$MEMORY_ROOT" --space shared --dry-run
+./memory.sh upgrade-sync --root "$MEMORY_ROOT" --space shared
+```
+
+The upgrade validates an in-memory copy, then takes a write lock, creates and fsyncs
+a standalone v1 backup, and migrates transactionally. Save its returned `backupPath`.
+These commands select one space at a time; they are CLI administration, outside
+agent/MCP tools. Restart only updated writers after upgrade. Old runtime code
+rejects v2; stopping writers prevents an already-open old connection from writing
+the old tables after migration. See [upgrade, rollback and limitations](docs/memory-sync-milestone.md).
+
+This is local write integration plus an embedded synthetic relay engine. Conflict
+resolution/restoration, operator bootstrap/sync commands, Cloudflare transport,
+encryption and a general backup/restore CLI remain deferred. Conflicted/tombstoned
+documents block ordinary writes; inspect `sync-status` and retain the database.
+Local storage and sync execution are trusted plaintext; optional encryption
+belongs at upload/download boundaries.
+See also [runtime architecture and references](docs/memory-sqlite-milestone.md).
 Keep database directories and any future sync credentials/keys or exports in the
 ignored `.memory-db/`, `.memory-sync/` and `.memory-exports/` locations.
 
@@ -910,7 +942,7 @@ Run the daemon-free version-smoke, configuration-mirror, and launcher checks:
 
 ```bash
 uv run --no-project --with pytest pytest tests -q
-bun test tests/memory-plugin.test.js tests/memory-cli.test.js tests/memory-sqlite.test.js
+bun test tests/memory-plugin.test.js tests/memory-cli.test.js tests/memory-sqlite.test.js tests/memory-transfer.test.js tests/memory-sync.test.js
 bun install --cwd config/chat/memory-mcp --frozen-lockfile
 bun test ./config/chat/memory-mcp/server.test.js
 sh -n start.sh

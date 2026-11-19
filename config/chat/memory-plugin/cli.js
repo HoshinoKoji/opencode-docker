@@ -3,11 +3,14 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { createMemoryStore } from "./backend.js";
 import { importMarkdown, exportMarkdown, safeRoot } from "./transfer.js";
+import { upgradeSync, syncStatus } from "./upgrade.js";
 
 const help = `Usage: memory.sh <command> [OPTIONS]
 
 Commands:
   init                      Initialize selected SQLite spaces, safely repeatable
+  upgrade-sync              Explicit v1 -> v2 upgrade with standalone v1 backup
+  sync-status               Read local schema, pending count, conflicts and cursor
   import --source DIR       Import Markdown into --root (destination); explicit only
   migrate --source DIR      Alias for import; source is never modified
   export --destination DIR  Export raw Markdown to a new directory
@@ -22,7 +25,7 @@ Options (also accept --flag=VALUE):
   --backend sqlite          SQLite only; Markdown runtime is rejected
   --source DIR              Absolute Markdown source root for import/migrate
   --destination DIR         Absolute new output root for export
-  --dry-run                 Validate/preview init/import/migrate/export without writes
+  --dry-run                 Validate/preview init/import/migrate/export/upgrade-sync
   --space shared|private|both
                             Default shared; both supports reads and administration
   --limit N                 Search matches (1..20) or read characters (1..20000)
@@ -48,6 +51,9 @@ Update JSON:
 Successful operations print one JSON object to stdout. Errors print a JSON
 error to stderr: exit 2 for usage/input, 1 for an operation failure. No LLM or
 OpenCode server is needed. Requires Bun with built-in YAML support.
+Record results use logicalPath (logical SQLite identifier) and name (.md).
+upgrade-sync requires all writers stopped; preview with --dry-run first.
+New databases remain v1 until explicit upgrade. No cloud transport is enabled.
 
 Space is caller-selected, not authenticated. The default never reads private
 memory. Use the same --request-id for retries of one record; choose a different
@@ -57,6 +63,8 @@ ID for a new record. The returned requestId can be reused after a successful cal
 class UsageError extends Error {}
 const usageError = (message) => { throw new UsageError(message); };
 const allowed = {
+  "upgrade-sync": ["root", "space", "dry-run"],
+  "sync-status": ["root", "space"],
   init: ["root", "space", "dry-run"],
   import: ["root", "source", "space", "dry-run"],
   migrate: ["root", "source", "space", "dry-run"],
@@ -150,6 +158,10 @@ export async function run(args, env = process.env) {
   const root = path.resolve(explicitRoot);
   if (!(await stat(root)).isDirectory()) usageError("--root must refer to an existing directory.");
   const store = createMemoryStore(root, { backend });
+  if (["upgrade-sync", "sync-status"].includes(command)) {
+    if (space === "both") usageError("Sync administration requires one explicit space at a time.");
+    return { result: await (command === "upgrade-sync" ? upgradeSync : syncStatus)({ root, scope: space, dryRun: options["dry-run"] ?? false }) };
+  }
   if (["init", "import", "migrate", "export"].includes(command)) {
     const dryRun = options["dry-run"] ?? false;
     if (command === "import" || command === "migrate") return { result: await importMarkdown({ root, source: options.source, scope: space, dryRun }) };

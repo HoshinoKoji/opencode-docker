@@ -64,9 +64,9 @@ async function sourceDocuments(root, scope) {
   return documents;
 }
 
-function validateDestination(db, documents) {
+function validateDestination(db, documents, store) {
   for (const doc of documents) {
-    const prior = db?.query("SELECT name, id, raw FROM documents WHERE name = ? OR id = ?").all(doc.name, doc.id) ?? [];
+    const prior = store.rows(db).filter((row) => row.name === doc.name || row.id === doc.id);
     if (prior.some((row) => row.name !== doc.name || row.id !== doc.id || row.raw !== doc.raw)) {
       throw new Error(`Destination conflict: ${doc.name}`);
     }
@@ -81,13 +81,13 @@ export async function importMarkdown({ root, source, scope = "shared", dryRun = 
   // Preflight every selected space before creating any database or importing data.
   for (const space of spaces(scope)) {
     const documents = await sourceDocuments(source, space);
-    await store.connection(space, (db) => validateDestination(db, documents));
+    await store.connection(space, (db) => validateDestination(db, documents, store));
     batches.push({ scope: space, documents });
   }
   if (!dryRun) {
     for (const batch of batches) {
       await store.locked(async () => {
-        validateDestination(store.transaction.getStore().db, batch.documents);
+        validateDestination(store.transaction.getStore().db, batch.documents, store);
         for (const doc of batch.documents) await store.atomic(store.relative(batch.scope, doc.name), doc.raw);
       }, batch.scope);
     }
@@ -103,7 +103,7 @@ export async function exportMarkdown({ root, destination, scope = "shared", dryR
   const store = new SQLiteMemoryStore(root);
   const files = [];
   for (const space of spaces(scope)) {
-    const rows = await store.connection(space, (db) => db?.query("SELECT name, raw FROM documents ORDER BY name").all() ?? []);
+    const rows = await store.connection(space, (db) => store.rows(db));
     for (const row of rows) files.push({ relative: store.relative(space, row.name), raw: row.raw });
   }
   if (!dryRun) {

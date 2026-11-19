@@ -1,6 +1,6 @@
 # SQLite 与 Cloudflare 记忆同步：最小实现计划
 
-状态：SQLite 已成为插件/CLI/MCP 唯一运行时后端；显式 init/import（migrate 别名）/export 与 dry-run 已实现。Markdown 用于导入导出及内部旧格式测试。未迁移真实记忆、未创建云资源。实现细节及已核实资料见 [本地里程碑说明](memory-sqlite-milestone.md)。
+状态：SQLite 已成为插件/CLI/MCP 唯一运行时后端；显式 init/import（migrate 别名）/export 与 dry-run 已实现。运行时现在兼容 v1 与显式升级后的 v2，普通 record/update 已原子写入同步操作、版本、稳定章节身份、投影和 outbox。新库仍初始化为 v1，普通读写不升级。record 返回 logicalPath，name 保留 .md，正文保留 Markdown。用户确认真实记忆已在此前完成 SQLite 迁移；本轮仅使用合成数据，未访问真实记忆或凭据、未创建云资源。见 [SQLite 里程碑](memory-sqlite-milestone.md) 与 [同步集成里程碑](memory-sync-milestone.md)。
 
 ## 目标与边界
 
@@ -98,4 +98,8 @@ INDEX 作为数据库派生视图提供兼容结果，不再维护第二份权�
 3. 在同步程序中加入可选加密和 Docker 启动脚本，完成集成测试。
 4. 提供部署、恢复和迁移说明；由用户确认云资源部署及真实数据迁移。
 
-每步可单独提交和验收。当前停在第一里程碑的本地后端：schema v1 保存完整文档、版本和原子 outbox；稳定章节 ID、同步协议及冲突处理待第二步设计验证。导入/导出已实现，数据库历史备份工具仍待实现。未创建资源、未迁移真实数据、未提交或推送发布。
+每步可单独提交和验收。当前已完成本地引擎及普通运行时写入集成：v2 持久化章节身份、操作及分支快照，支持创建文档、保守冲突、tombstone、重试幂等和原子接收游标。普通章节更新暂编译为整文档操作以原子保留元数据，因此不同设备编辑不同章节仍可能冲突；仅底层显式 section 操作支持不相交自动合并。相同章节结构保持 ID，结构变化建立新身份。
+
+升级前安装所有写入端的新版本并停止全部写入端（包括已加载的旧插件），运行 `./memory.sh upgrade-sync --root /absolute/database-root --space shared --dry-run`，确认后去掉 `--dry-run`。实际升级在写锁内生成并 fsync 独立 v1 备份，事务升级并返回 backupPath；原有版本和旧 outbox 保留。用 `./memory.sh sync-status --root /absolute/database-root --space shared` 查看本地状态。每次管理一个授权空间，旧运行时代码拒绝 v2。完整回退步骤见同步集成里程碑。
+
+冲突解决/恢复、面向操作者的 bootstrap/推拉命令、元数据感知的章节操作、Worker/D1、可选加密与通用备份恢复 CLI 仍待实现。普通写入遇到冲突或 tombstone 会阻止覆盖。没有云同步、部署或后台网络循环。本轮未创建资源、未操作真实数据、未提交或推送。

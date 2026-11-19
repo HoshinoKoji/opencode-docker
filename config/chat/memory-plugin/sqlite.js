@@ -7,6 +7,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { MemoryStore } from "./store.js";
 import { decode, legacyMetadata } from "./format.js";
+import { SyncPrototype } from "./sync-prototype.js";
 
 const hash = (text) => createHash("sha256").update(text).digest("hex");
 
@@ -39,7 +40,7 @@ export class SQLiteMemoryStore extends MemoryStore {
 
   async updateMetadata(scope, document, now) {
     if (document.metadata) return document.metadata;
-    const prior = await this.connection(scope, (db) => db?.query("SELECT id FROM documents WHERE name = 'MEMORY.md'").get());
+    const prior = await this.connection(scope, (db) => this.rows(db).find((row) => row.name === "MEMORY.md"));
     // A plain imported document already has a deterministic database identity.
     // Keep it when its first normal update introduces frontmatter.
     return prior ? { ...legacyMetadata(scope, "MEMORY.md", document.body), id: prior.id }
@@ -62,7 +63,7 @@ export class SQLiteMemoryStore extends MemoryStore {
     try {
       db.exec("PRAGMA busy_timeout = 100; PRAGMA foreign_keys = ON;");
       const version = db.query("PRAGMA user_version").get().user_version;
-      if (version !== 0 && version !== 1) throw new Error(`Unsupported memory database schema: ${version}.`);
+      if (![0, 1, 2].includes(version)) throw new Error(`Unsupported memory database schema: ${version}.`);
       if (writing) {
         chmodSync(filename, 0o600);
         db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;");
@@ -94,7 +95,7 @@ export class SQLiteMemoryStore extends MemoryStore {
             db.query("INSERT INTO store_info VALUES (?)").run(scope);
           }).immediate();
         }
-      } else if (version !== 1) throw new Error("Memory database is uninitialized.");
+      } else if (version === 0) throw new Error("Memory database is uninitialized.");
       if (db.query("SELECT scope FROM store_info").get()?.scope !== scope) throw new Error("Memory database space mismatch.");
       return db;
     } catch (error) { db.close(); throw error; }
@@ -121,11 +122,18 @@ export class SQLiteMemoryStore extends MemoryStore {
 
   async text(relative) {
     const { scope, name } = this.location(relative);
-    return this.connection(scope, (db) => db?.query("SELECT raw FROM documents WHERE name = ?").get(name)?.raw ?? "");
+    return this.connection(scope, (db) => this.rows(db).find((row) => row.name === name)?.raw ?? "");
+  }
+
+  rows(db) {
+    if (!db) return [];
+    return db.query(db.query("PRAGMA user_version").get().user_version === 2
+      ? "SELECT s.name, s.id, v.raw, v.revision FROM sync_seed s JOIN sync_views v ON s.id = v.id WHERE v.deleted = 0 ORDER BY s.name DESC"
+      : "SELECT name, id, raw, revision FROM documents ORDER BY name DESC").all();
   }
 
   async names(scope) {
-    return this.connection(scope, (db) => ["MEMORY.md", ...(db?.query("SELECT name FROM documents WHERE name != 'MEMORY.md' ORDER BY name DESC").all() ?? []).map((row) => row.name)]);
+    return this.connection(scope, (db) => ["MEMORY.md", ...this.rows(db).filter((row) => row.name !== "MEMORY.md").map((row) => row.name)]);
   }
 
   async rebuild(scope) { return this.relative(scope, "INDEX.md"); }
@@ -139,12 +147,24 @@ export class SQLiteMemoryStore extends MemoryStore {
     const document = decode(raw);
     const metadata = document.metadata ?? legacyMetadata(scope, name, document.body);
     const db = active.db;
-    const prior = db.query("SELECT head, raw FROM documents WHERE name = ?").get(name);
-    if (prior?.raw === raw) return;
     const operation = randomUUID();
+    const v2 = db.query("PRAGMA user_version").get().user_version === 2;
+    if (v2) {
+      const sync = new SyncPrototype(db);
+      const seed = db.query("SELECT id FROM sync_seed WHERE name = ?").get(name);
+      if (seed && seed.id !== metadata.id) throw new Error("Document metadata identity changed.");
+      const view = seed ? sync.view(seed.id) : null;
+      if (view?.conflicts.length || view?.deleted) throw new Error("Document requires explicit conflict resolution or restoration; runtime writes are blocked.");
+      if (view?.raw === raw) return;
+      sync.commit(sync.prepare({ id: operation, document: metadata.id, name,
+        kind: seed ? "full" : "create", content: raw }));
+    }
+    const prior = db.query("SELECT head, raw FROM documents WHERE name = ?").get(name);
+    if (!v2 && prior?.raw === raw) return;
     const revision = hash(raw);
     db.query("INSERT INTO versions VALUES (?, ?, ?, ?, ?, ?)").run(operation, metadata.id, prior?.head ?? null, revision, raw, new Date().toISOString());
-    db.query("INSERT INTO outbox VALUES (?)").run(operation);
+    // v1 pending entries are retained; v2 mutations enqueue only sync operations.
+    if (!v2) db.query("INSERT INTO outbox VALUES (?)").run(operation);
     db.query(`INSERT INTO documents VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(name) DO UPDATE SET id=excluded.id, raw=excluded.raw, revision=excluded.revision, head=excluded.head`).run(name, metadata.id, raw, revision, operation);
   }

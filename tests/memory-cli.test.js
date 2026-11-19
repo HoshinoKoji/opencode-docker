@@ -7,11 +7,12 @@ import { Database } from "bun:sqlite";
 
 const wrapper = path.resolve(import.meta.dir, "../memory.sh");
 const directories = [];
-test("CLI updates a section via JSON without changing siblings", async () => {
+for (const schema of [1, 2]) test(`CLI v${schema} updates a section via JSON without changing siblings`, async () => {
   const { root, call } = await fixture();
   await mkdir(path.join(root, ".sessions"));
   await writeFile(path.join(root, ".sessions/MEMORY.md"), "# Memory\n## First\nold\n## Last\nkeep\n");
   expect(call(["import", "--source", root]).status).toBe(0);
+  if (schema === 2) expect(call(["upgrade-sync"]).status).toBe(0);
   const read = JSON.parse(call(["read", "MEMORY.md", "--section", "First"]).stdout).results[0];
   const input = JSON.stringify({ section: "First", content: "## First\nnew", expectedRevision: read.revision });
   expect(call(["update", "--input=-"], input).status).toBe(0);
@@ -63,12 +64,18 @@ test("CLI help is side-effect free even with a nonexistent root", async () => {
   expect(await readdir(root)).toEqual([]);
 });
 
-test("external cwd, root override, stdin and file writes, and explicit spaces", async () => {
+for (const schema of [1, 2]) test(`CLI v${schema}: external cwd, root override, stdin and file writes, and explicit spaces`, async () => {
   const { root, directory, call } = await fixture();
+  if (schema === 2) {
+    expect(call(["init", "--space", "both"]).status).toBe(0);
+    for (const scope of ["shared", "private"]) expect(call(["upgrade-sync", "--space", scope]).status).toBe(0);
+  }
   const first = call(["record", "--input=-", "--request-id=stable-key"], JSON.stringify(record));
   expect(first.status).toBe(0);
   expect(first.stderr).toBe("");
   const saved = JSON.parse(first.stdout);
+  expect(saved.logicalPath).toBe(`.sessions/${saved.name}`);
+  expect(saved).not.toHaveProperty("path");
   expect(saved.scope).toBe("shared");
   expect(saved.requestId).toBe("stable-key");
   const inputFile = path.join(directory, "record input.json");
@@ -102,7 +109,7 @@ test("stable request IDs retry records after a filename/date change without dupl
   db.close();
   const second = call(args, JSON.stringify(record));
   expect(second.status).toBe(0);
-  expect(JSON.parse(second.stdout).path).toBe(renamed);
+  expect(JSON.parse(second.stdout).logicalPath).toBe(renamed);
   expect(JSON.parse(second.stdout).id).toBe(first.id);
   expect(JSON.parse(call(["recall"]).stdout).spaces[0].recent).toHaveLength(1);
   const changed = call(args, JSON.stringify({ ...record, details: "Changed content" }));

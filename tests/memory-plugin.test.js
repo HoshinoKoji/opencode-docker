@@ -295,7 +295,7 @@ test("retry repairs an interrupted index update without recreating the record", 
 test("frontmatter quotes round-trip punctuation and multiline YAML and preserve unknown metadata", async () => {
   const { root, store } = await fixture();
   const record = await store.record("serious", { ...input, conclusion: "中文: #标记\n第二行 | pipe", preferences: "yes: true" }, "yaml");
-  const original = decode(await readFile(path.join(root, record.path), "utf8"));
+  const original = decode(await readFile(path.join(root, record.logicalPath), "utf8"));
   expect(original.metadata.summary).toBe("中文: #标记\n第二行 | pipe");
   const yaml = encode({ ...original.metadata, tags: ["中文", "sync"], custom: { enabled: true } }, original.body);
   expect(decode(yaml).metadata.custom).toEqual({ enabled: true });
@@ -343,8 +343,8 @@ test("indexes derive from metadata after deletion or manual edits; duplicate IDs
   const { root, store } = await fixture();
   const record = await store.record("serious", input, "derive");
   await rm(path.join(root, ".sessions/INDEX.md"));
-  const document = decode(await readFile(path.join(root, record.path), "utf8"));
-  await writeFile(path.join(root, record.path), encode({ ...document.metadata, summary: "New summary" }, document.body));
+  const document = decode(await readFile(path.join(root, record.logicalPath), "utf8"));
+  await writeFile(path.join(root, record.logicalPath), encode({ ...document.metadata, summary: "New summary" }, document.body));
   expect((await store.recall("serious")).spaces[0].recent[0]).toContain("New summary");
   expect((await store.read("serious", { name: "INDEX.md" })).results[0].text).toContain("New summary");
   await store.locked(() => store.rebuild("shared"));
@@ -413,7 +413,7 @@ test("search is literal, multilingual, bounded and follows external file edits",
   expect(page.truncated).toBe(true);
   const next = (await store.read("serious", { name: record.name, offset: 20, limit: 20 })).results[0];
   expect(next.revision).toBe(page.revision);
-  await writeFile(path.join(root, record.path), "Externally edited record");
+  await writeFile(path.join(root, record.logicalPath), "Externally edited record");
   expect((await store.search("serious", { query: "中文记忆" })).matches).toBe(0);
   expect((await store.search("serious", { query: "externally" })).matches).toBe(1);
 });

@@ -61,16 +61,20 @@ in-process writer indefinitely. A separate connection and AsyncLocalStorage bind
 every asynchronous mutation to its space transaction. Exceptions roll back all
 document/version/outbox changes. Connections close after use. Database files use
 0600 and newly created database directories use 0700; the root is caller-managed.
-INDEX is generated from documents on demand. Returned record `path` remains the
-legacy logical compatibility path; it is not a physical Markdown file in SQLite.
+INDEX is generated from documents on demand. Returned record `logicalPath` is the
+logical compatibility identifier; `name` retains `.md` and the body remains Markdown.
+The former record-result `path` key has been removed. Administrative physical
+paths (including legacy backup manifests) retain their physical meaning.
 
-## Deliberate stopping point
+## Subsequent runtime sync integration
 
-This is local storage groundwork, not a sync implementation or a frozen network
-protocol. Whole-document versions preserve today's API but do not solve stable
-section identity, subtree changes or cross-device merge. Stable sections,
-inbox/cursors/conflicts/tombstones, remote idempotency, transport encryption,
-Worker/D1 deployment and database backup tooling remain future work. Explicit
+Schema v1 remains supported and is the default for initialization. The subsequent
+[sync integration milestone](memory-sync-milestone.md) adds v2 runtime ordinary
+writes, stable sections, inbox/cursors/conflicts/tombstones and local-relay
+idempotency. `upgrade-sync [--dry-run]` explicitly upgrades one stopped space with
+a standalone v1 backup; ordinary reads/writes never upgrade. Conflict resolution,
+restoration, operator bootstrap/transport, encryption, Worker/D1 and general
+backup/restore tooling remain future work. Explicit
 `memory.sh init`, `import` (alias `migrate`) and `export` support absolute roots,
 selected spaces and dry-run. See the README for full commands. Import preserves
 raw UTF-8 bytes, existing IDs and metadata, leaves sources untouched, rejects
@@ -81,7 +85,8 @@ Legacy plain Markdown stays byte-identical; missing metadata remains absent in
 public reads and session indexes use deterministic legacy metadata. Ordinary
 writes may initialize empty spaces for ergonomics; reads never initialize and
 neither path imports Markdown automatically. Administrative commands are not
-exposed as agent or MCP tools. No real memory migration has been performed.
+exposed as agent or MCP tools. The user reports real memory migration was completed
+in a separate earlier task; the synthetic sync milestone did not access that data.
 
 Search uses the original case-insensitive all-term scan, including Chinese and
 short terms. FTS acceleration is deferred. Version history is retained without

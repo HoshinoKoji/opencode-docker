@@ -23,7 +23,7 @@ const descriptions = {
   recall: "Review summary/navigation, section titles and five recent records. Unsummarized bodies up to 2000 characters return in full (mode=full); longer files report missing summaries (mode=overview). Use memory_read with section for details.",
   search: "Search literal whitespace-separated terms; returns match count and up to 20 matches.",
   read: "Read a returned filename or MEMORY.md, optionally by exact section title; missing/ambiguous titles fail. Includes heading and nested sections. Pagination is section-relative; metadata/revision cover the full file. Read all selected pages before section update, or all whole-body pages before full update. INDEX.md supports only whole-body pagination.",
-  record: "Save a topic and rebuild its index. Supply a unique requestId; reuse the same ID and content on retries, including after a lost response.",
+  record: "Save a topic and rebuild its index. Returns name and logicalPath, logical SQLite document identifiers; the Markdown body is stored in the database. Supply a unique requestId; reuse the same ID and content on retries, including after a lost response.",
   update: "Update long-term memory, optionally only section (exact heading title). Read all selected-section or full-body pages first. Section content must include the original heading title/level and may contain lower-level nested headings. Other sections and metadata are preserved. expectedRevision covers the full file; on conflict read again and merge. Keep summary/navigation consistent with detail changes.",
 };
 

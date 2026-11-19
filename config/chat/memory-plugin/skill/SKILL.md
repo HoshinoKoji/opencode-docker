@@ -57,6 +57,12 @@ databases. Normal writes may initialize empty spaces. Explicit administration us
 `memory.sh import --root /absolute/database-root --source /absolute/markdown-root --space shared --dry-run`.
 Import is explicit, preserves source bytes and leaves source files untouched.
 Review the README before administration; it is outside routine agent recording.
+Record results use `logicalPath` for the logical SQLite identifier and `name`
+for the `.md` document name; the body remains Markdown in SQLite. Physical
+database/backup paths appear only in administrative results. Both schema v1 and
+explicitly upgraded v2 support ordinary tools. `upgrade-sync --dry-run` and
+`upgrade-sync` are operator administration with stopped writers and a v1 backup;
+ordinary tools never upgrade databases. Conflicts/restoration need future tooling.
 
 ## Read
 

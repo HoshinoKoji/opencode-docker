@@ -297,7 +297,7 @@ export class MemoryStore {
       }
       if (!existing) await this.atomic(relative, content);
       await this.rebuild(scope);
-      return { scope, name: savedName, path: relative, id: previous.metadata?.id ?? metadata.id, revision: revision(existing || content) };
+      return { scope, name: savedName, logicalPath: relative, id: previous.metadata?.id ?? metadata.id, revision: revision(existing || content) };
     }, scope);
   }
 

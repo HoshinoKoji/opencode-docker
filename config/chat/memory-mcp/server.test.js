@@ -8,6 +8,8 @@ import os from "node:os";
 import { ExternalMemoryStore } from "./policy.js";
 import { importMarkdown } from "../memory-plugin/transfer.js";
 import { Database } from "bun:sqlite";
+import { upgradeSync, syncStatus } from "../memory-plugin/upgrade.js";
+import { SQLiteMemoryStore } from "../memory-plugin/sqlite.js";
 
 const launcher = path.resolve(import.meta.dir, "../../..", "memory-mcp.sh");
 const directories = [];
@@ -26,12 +28,18 @@ test("stdio updates only selected section with revision checks", async () => {
   await denied(readonly, "update", input);
 });
 const record = { topic: "mcp-test", goal: "Share memory", conclusion: "Saved", details: "中文 discussion", requestId: "stable-request" };
-test("SQLite stdio persistence, retries, sections and read-only scope policy", async () => {
+for (const schema of [1, 2]) test(`SQLite v${schema} stdio persistence, retries, sections and read-only scope policy`, async () => {
   const root = await fixture();
+  if (schema === 2) {
+    await new SQLiteMemoryStore(root).init("shared");
+    await upgradeSync({ root });
+  }
   const { client } = await connect(root, ["--backend", "sqlite"]);
   const initial = (await result(client, "read", { name: "MEMORY.md" })).results[0];
   expect(initial.text).toBe(""); // Synthetic Markdown fixture is never imported.
   const saved = await result(client, "record", record);
+  expect(saved.logicalPath).toBe(`.sessions/${saved.name}`);
+  expect(saved).not.toHaveProperty("path");
   expect(await result(client, "record", record)).toEqual(saved);
   await denied(client, "record", { ...record, details: "changed" });
   await result(client, "update", { content: "# Memory\n## Detail\nold\n## Last\nkeep", expectedRevision: initial.revision });
@@ -44,6 +52,8 @@ test("SQLite stdio persistence, retries, sections and read-only scope policy", a
   expect((await result(readonly, "recall")).spaces[0].recent).toHaveLength(1);
   await denied(readonly, "record", record);
   await denied(readonly, "read", { name: "MEMORY.md", scope: "private" });
+  await denied(client, "update", { content: "malformed", expectedRevision: "bad" });
+  if (schema === 2) expect((await syncStatus({ root })).pending).toBe(3);
   expect(await readFile(path.join(root, ".sessions/MEMORY.md"), "utf8")).toContain("shared-marker");
 });
 async function fixture() {

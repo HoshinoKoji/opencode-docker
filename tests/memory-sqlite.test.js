@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtemp, mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { execFile } from "node:child_process";
@@ -11,6 +11,9 @@ import { run } from "../config/chat/memory-plugin/cli.js";
 import plugin from "../config/chat/memory-plugin/index.js";
 import { encode } from "../config/chat/memory-plugin/format.js";
 import { MemoryStore } from "../config/chat/memory-plugin/store.js";
+import { upgradeSync, syncStatus } from "../config/chat/memory-plugin/upgrade.js";
+import { SyncPrototype } from "../config/chat/memory-plugin/sync-prototype.js";
+import { exportMarkdown } from "../config/chat/memory-plugin/transfer.js";
 
 const directories = [];
 async function fixture() {
@@ -72,14 +75,21 @@ test("SQLite: independent CLI processes race initialization and reuse one root",
 });
 const read = async (store, options = {}) => (await store.read("build", { name: "MEMORY.md", ...options })).results[0];
 
-for (const backend of ["sqlite"]) {
-  test(`${backend}: public contract, progressive reads, retries, metadata, revisions and policy`, async () => {
+for (const schema of [1, 2]) {
+  const backend = "sqlite";
+  test(`${backend} v${schema}: public contract, progressive reads, retries, metadata, revisions and policy`, async () => {
     const root = await fixture();
     const store = createMemoryStore(root, { backend });
+    if (schema === 2) for (const scope of ["shared", "private"]) {
+      await store.init(scope);
+      await upgradeSync({ root, scope });
+    }
     const empty = await read(store);
     expect(empty.text).toBe("");
     expect((await store.recall("build")).spaces[0].memory.mode).toBe("full");
     const saved = await store.record("build", input, "stable-call");
+    expect(saved.logicalPath).toBe(`.sessions/${saved.name}`);
+    expect(saved).not.toHaveProperty("path");
     expect(await store.record("build", input, "stable-call")).toEqual(saved);
     await expect(store.record("build", { ...input, details: "changed" }, "stable-call")).rejects.toThrow("different content");
     expect((await store.search("build", { query: "中文 CASE" })).results[0].name).toBe(saved.name);
@@ -166,8 +176,12 @@ test("SQLite: read-only empty store, explicit root, no Markdown discovery, schem
   await expect(read(store)).rejects.toThrow("symlinks");
 });
 
-test("SQLite: plugin and CLI use one explicit root across unrelated worktrees", async () => {
+for (const schema of [1, 2]) test(`SQLite v${schema}: plugin and CLI use one explicit root across unrelated worktrees`, async () => {
   const root = await fixture();
+  if (schema === 2) {
+    await createMemoryStore(root).init("shared");
+    await run(["upgrade-sync", "--root", root]);
+  }
   async function tools(project) {
     const result = {};
     await plugin.setup({ options: { backend: "sqlite", root }, location: { project: { directory: project } },
@@ -179,9 +193,124 @@ test("SQLite: plugin and CLI use one explicit root across unrelated worktrees", 
   const b = await tools(await fixture());
   const context = { agent: "build", sessionID: "synthetic", messageID: "m", id: "call" };
   const saved = JSON.parse((await a.record.execute(input, context)).content);
+  expect(saved.logicalPath).toBe(`.sessions/${saved.name}`);
+  expect(saved).not.toHaveProperty("path");
   expect(JSON.parse((await b.record.execute(input, context)).content)).toEqual(saved);
   const cli = await run(["search", "中文", "--backend", "sqlite", "--root", root], {});
   expect(cli.result.results[0].name).toBe(saved.name);
+  const initial = JSON.parse((await a.read.execute({ name: "MEMORY.md" }, context)).content).results[0];
+  await b.update.execute({ content: "# Memory\n## Detail\nold\n## Last\nkeep", expectedRevision: initial.revision }, context);
+  const selected = JSON.parse((await a.read.execute({ name: "MEMORY.md", section: "Detail" }, context)).content).results[0];
+  await b.update.execute({ section: "Detail", content: "## Detail\nnew", expectedRevision: selected.revision }, context);
+  const changed = JSON.parse((await a.read.execute({ name: "MEMORY.md" }, context)).content).results[0];
+  expect(changed.text).toContain("## Detail\nnew");
+  expect(changed.text).toContain("## Last\nkeep");
+  expect(changed.metadata.id).toBe(selected.metadata.id);
+  await expect(b.update.execute({ content: "stale", expectedRevision: initial.revision }, context)).rejects.toThrow("Memory changed");
+  await expect(b.record.execute(input, { ...context, agent: "plan" })).rejects.toThrow("read-only");
   await expect(b.read.execute({ name: "MEMORY.md", scope: "private" }, context)).rejects.toThrow("shared memory only");
   await expect(plugin.setup({ options: { backend: "sqlite" }, location: { project: { directory: root } } })).rejects.toThrow("absolute");
+});
+
+test("explicit upgrade previews without writes, preserves v1 backup/history/outbox and is repeatable", async () => {
+  const root = await fixture(), store = createMemoryStore(root);
+  await store.record("build", input, "before-upgrade");
+  await store.update("build", { content: "# Memory\n## Detail\nold\n", expectedRevision: (await read(store)).revision });
+  const before = await read(store);
+  const snapshot = (db) => ["documents", "versions", "outbox", "store_info"].map((table) => db.query(`SELECT * FROM ${table}`).all());
+  const original = await store.connection("shared", snapshot);
+  const files = await readdir(path.join(root, ".memory-db"));
+  expect((await run(["upgrade-sync", "--root", root, "--dry-run"])).result.targetSchema).toBe(2);
+  expect(await readdir(path.join(root, ".memory-db"))).toEqual(files);
+  expect((await syncStatus({ root })).schema).toBe(1);
+  const report = (await run(["upgrade-sync", "--root", root])).result;
+  expect(report.upgraded).toBe(true);
+  const backup = new Database(report.backupPath, { readonly: true });
+  try {
+    expect(backup.query("PRAGMA user_version").get().user_version).toBe(1);
+    expect(snapshot(backup)).toEqual(original);
+  } finally { backup.close(); }
+  expect(await store.connection("shared", snapshot)).toEqual(original);
+  expect(await read(store)).toEqual(before);
+  expect((await upgradeSync({ root })).upgraded).toBe(false);
+  const sections = () => store.connection("shared", (db) => db.query("SELECT id FROM sync_sections WHERE document = ? ORDER BY position").all(before.metadata.id));
+  const ids = await sections();
+  await store.update("build", { section: "Detail", content: "## Detail\nnew", expectedRevision: before.revision });
+  expect(await sections()).toEqual(ids);
+  expect((await read(store)).metadata.id).toBe(before.metadata.id);
+  expect((await syncStatus({ root })).pending).toBe(1);
+  await store.connection("shared", (db) => {
+    expect(db.query("SELECT * FROM outbox").all()).toEqual(original[2]);
+    const op = db.query("SELECT id FROM sync_operations").get();
+    expect(db.query("SELECT operation_id FROM versions WHERE operation_id = ?").get(op.id)).not.toBeNull();
+  });
+  await expect(run(["upgrade-sync", "--root", root, "--space", "both"])).rejects.toThrow("one explicit space");
+});
+
+test("v2 runtime rollback includes operation, stable IDs, legacy history and pending queue", async () => {
+  const root = await fixture(), store = createMemoryStore(root);
+  await store.init("shared"); await upgradeSync({ root });
+  const atomic = store.atomic.bind(store);
+  store.atomic = async (...args) => { await atomic(...args); throw new Error("synthetic crash"); };
+  await expect(store.record("build", input, "fail")).rejects.toThrow("synthetic crash");
+  await store.connection("shared", (db) => {
+    for (const table of ["documents", "versions", "outbox", "sync_seed", "sync_operations", "sync_views", "sync_sections", "sync_outbox", "sync_versions", "sync_log"]) {
+      expect(db.query(`SELECT count(*) AS n FROM ${table}`).get().n).toBe(0);
+    }
+  });
+  store.atomic = atomic;
+  const saved = await store.record("build", input, "fail");
+  expect(await store.record("build", input, "fail")).toEqual(saved);
+  expect((await syncStatus({ root })).pending).toBe(1);
+});
+
+test("v2 runtime sees received records/edits, exports projections, and blocks conflicted/deleted writes", async () => {
+  const root = await fixture(), store = createMemoryStore(root);
+  await store.update("build", { content: "# Memory\n## Detail\nold", expectedRevision: (await read(store)).revision });
+  await upgradeSync({ root });
+  const before = await read(store);
+  const db = await store.open("shared", true), sync = new SyncPrototype(db);
+  try {
+    const other = await fixture();
+    await mkdir(path.join(other, ".memory-db"));
+    await writeFile(path.join(other, ".memory-db/shared.sqlite"), db.serialize());
+    const remote = createMemoryStore(other);
+    const saved = await remote.record("build", input, "remote-create");
+    const operations = await remote.connection("shared", (replica) => new SyncPrototype(replica).pending());
+    sync.push(operations);
+    expect((await store.read("build", { name: saved.name })).results[0].text).toContain("中文");
+    const destination = path.join(await fixture(), "export");
+    await exportMarkdown({ root, destination });
+    expect(await readFile(path.join(destination, saved.logicalPath), "utf8")).toContain("中文");
+    const raw = sync.view(before.metadata.id).raw;
+    const left = sync.prepare({ id: "left", document: before.metadata.id, kind: "full", content: raw.replace("old", "left") });
+    const right = sync.prepare({ id: "right", document: before.metadata.id, kind: "full", content: raw.replace("old", "right") });
+    sync.push([left]);
+    expect((await read(store)).text).toContain("left");
+    sync.push([right]);
+    expect((await syncStatus({ root })).conflicts).toHaveLength(1);
+    await expect(store.update("build", { content: "resolve", expectedRevision: (await read(store)).revision })).rejects.toThrow("conflict resolution");
+    sync.push([{ ...sync.prepare({ id: "delete", document: before.metadata.id, kind: "delete" }), base: [] }]);
+    expect((await read(store)).text).toBe("");
+    await expect(store.update("build", { content: "restore", expectedRevision: (await read(store)).revision })).rejects.toThrow();
+  } finally { db.close(); }
+});
+
+test("upgrade rejects malformed history and read-only engine mutations; absent databases stay absent", async () => {
+  const root = await fixture(), store = createMemoryStore(root);
+  await expect(upgradeSync({ root, dryRun: true })).rejects.toThrow("Initialize");
+  expect(await readdir(root)).toEqual([]);
+  await store.record("build", input, "seed");
+  let db = await store.open("shared", true);
+  db.exec("UPDATE versions SET revision = 'broken'"); db.close();
+  await expect(upgradeSync({ root, dryRun: true })).rejects.toThrow("history");
+  expect((await syncStatus({ root })).schema).toBe(1);
+  const other = await fixture(), otherStore = createMemoryStore(other);
+  await otherStore.init("shared"); await upgradeSync({ root: other });
+  db = await otherStore.open("shared");
+  try {
+    const sync = new SyncPrototype(db);
+    expect(() => sync.commit(sync.prepare({ id: "creation", document: "doc", name: "MEMORY.md", kind: "create", content: "# Synthetic\n" }))).toThrow();
+    expect(sync.pending()).toEqual([]);
+  } finally { db.close(); }
 });
