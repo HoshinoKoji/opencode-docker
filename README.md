@@ -51,7 +51,7 @@ ordinary `docker compose down` and container recreation.
 
 `./start.sh` defaults to `ghcr.io/hoshinokoji/opencode-runtime:latest` and
 pulls on every start. `latest` follows the last successfully published stable
-release. To start offline with an already-cached image:
+release. To start offline with an already-cached image and exact OpenCode CLI version:
 
 ```bash
 ./start.sh --no-pull
@@ -146,6 +146,42 @@ Source edits and deletions take effect after restarting the container:
 ```bash
 docker compose restart opencode
 ```
+
+### OpenCode Version and Upgrades
+
+`OPENCODE_VERSION` selects an exact stable V2 release (currently `2.3.2`).
+The first `opencode` invocation installs that version using the official Bun
+package and its platform-selecting postinstall script. Installs live in the
+`opencode-data` volume under `$XDG_DATA_HOME/opencode/runtime/v1/`, keyed by
+platform/CPU variant and version. Normal restarts verify and reuse the exact
+cached binary without contacting the installer or network. OpenCode itself and
+configured plugins/providers may still use the network.
+
+Upgrade without rebuilding the runtime image:
+
+```bash
+OPENCODE_VERSION=2.3.2 ./start.sh --no-pull
+# Or set OPENCODE_VERSION in .env, then:
+docker compose up -d --pull never
+```
+
+Replace the example pin with the desired published stable V2 release. Compose
+recreates the service when its version environment changes. `docker compose
+restart` keeps the existing environment and does not reread `.env`. Shell
+overrides win over `.env`; the launcher otherwise uses `versions.env`, and
+direct image/Compose use falls back to the default pin baked into the image.
+Each uncached version requires network access; failed installs stop that launch
+with an error and never fall back to another version. Switching back to a cached
+pin reuses it. Old versions remain until the operator removes their cache entries
+while the service is stopped; deleting `opencode-data` also deletes sessions and
+authentication, so retain that volume.
+
+The launcher serializes installation with `flock`, verifies the native version,
+and atomically publishes a staged binary plus version/platform/SHA-256 marker.
+Warm launches check the marker and checksum. This is an integrity check within
+trusted, runtime-user-owned storage, not a security boundary against that user.
+Interrupted stages are never cache hits. Arbitrary downstream commands such as
+`Rscript` install nothing unless they invoke `opencode` themselves.
 
 ### Personal Workspace Preferences
 
@@ -376,10 +412,13 @@ For example, to build with a different pinned Bun version:
 BUN_VERSION=1.3.15 ./start.sh --build
 ```
 
-Bun and uv come from version-pinned official images. OpenCode V2 is installed
-with `bun install -g --trust @opencode/cli@<version>` into `/usr/local`, where
-every runtime UID can execute it. The official package handles platform
-selection; the native CLI does not require Node.
+Bun and uv come from version-pinned official images. Builds bake the OpenCode
+default pin and a launcher at `/usr/local/bin/opencode`; they download no OpenCode
+package. At runtime the launcher uses `bun install -g --trust
+@opencode/cli@<version>` in an isolated staging directory, retaining the selected
+native binary in the data volume. The native CLI does not require Node. The
+entrypoint prepares state and drops to the configured UID/GID before installation;
+custom `OPENCODE_HOME` layouts use the corresponding data-volume target.
 
 When upgrading from V1, back up persistent configuration and data volumes.
 Check custom plugins and providers against the

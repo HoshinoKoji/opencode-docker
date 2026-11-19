@@ -139,8 +139,8 @@ def launcher_workspace(tmp_path):
         'set -eu\n'
         'printf "%s\\000" "$@" >> "$ARGS_LOG"\n'
         'printf "\\000" >> "$ARGS_LOG"\n'
-        'printf "%s\\n" "$BUN_VERSION" "$OPENCODE_VERSION" "$OPENCODE_DEFAULT_CONFIG_SOURCE" > "$VERSIONS_LOG"\n'
-        'for key in OPENCODE_PORT OPENCODE_BIND_ADDRESS OPENCODE_IMAGE OPENCODE_CONFIG_SOURCE OPENCODE_SKILLS_SOURCE OPENCODE_HTTP_PROXY OPENCODE_HTTPS_PROXY HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy; do\n'
+        'printf "%s\\n" "$BUN_VERSION" "${OPENCODE_VERSION-$OPENCODE_DEFAULT_VERSION}" "$OPENCODE_DEFAULT_CONFIG_SOURCE" > "$VERSIONS_LOG"\n'
+        'for key in OPENCODE_VERSION OPENCODE_PORT OPENCODE_BIND_ADDRESS OPENCODE_IMAGE OPENCODE_CONFIG_SOURCE OPENCODE_SKILLS_SOURCE OPENCODE_HTTP_PROXY OPENCODE_HTTPS_PROXY HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy; do\n'
         '  printf "%s=" "$key"\n'
         '  printenv "$key" || printf "<unset>\\n"\n'
         'done > "$VERSIONS_LOG.env"\n'
@@ -337,6 +337,7 @@ def test_launcher_defaults_leave_dotenv_overrides_to_compose(launcher_workspace)
     settings = dict(line.split("=", 1) for line in Path(f"{versions_log}.env").read_text().splitlines())
     assert settings["OPENCODE_CONFIG_SOURCE"] == "<unset>"
     assert settings["OPENCODE_IMAGE"] == "<unset>"
+    assert settings["OPENCODE_VERSION"] == "<unset>"
     assert versions_log.read_text().splitlines()[-1] == str(host_config)
     assert len(launcher_calls(args_log)) == 1
 

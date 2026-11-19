@@ -56,11 +56,13 @@ RUN ln -sf /usr/local/bin/bun /usr/local/bin/bunx
 # uv and uvx from the pinned official image.
 COPY --from=uv /uv /uvx /usr/local/bin/
 
-# Install outside HOME so the CLI is available to every runtime UID. Keep
-# BUN_INSTALL build-local: runtime installs should use the writable user HOME.
-RUN BUN_INSTALL=/usr/local bun install -g --trust "@opencode/cli@${OPENCODE_VERSION}" \
-    && chmod -R a+rX /usr/local/install \
-    && rm -rf /root/.bun
+# Bake only the default pin. The launcher installs on first use into the
+# persistent data volume, after the entrypoint drops to the runtime UID.
+ENV OPENCODE_DEFAULT_VERSION=${OPENCODE_VERSION}
+COPY docker/opencode.sh /usr/local/bin/opencode
+RUN case "$OPENCODE_VERSION" in ''|*[!0-9.]*) exit 1 ;; esac \
+    && printf '%s\n' "$OPENCODE_VERSION" | grep -Eq '^2\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+    && chmod 755 /usr/local/bin/opencode
 
 # Neutral development defaults, baked outside any HOME so they survive a
 # different mount layout. The entrypoint copies them into the active HOME only

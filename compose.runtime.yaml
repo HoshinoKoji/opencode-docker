@@ -37,6 +37,8 @@ services:
       - --port
       - ${OPENCODE_PORT:-4096}
     environment:
+      # Empty falls back to the image pin; start.sh supplies the checkout pin.
+      OPENCODE_VERSION: "${OPENCODE_VERSION-${OPENCODE_DEFAULT_VERSION:-}}"
       OPENCODE_UID: "${OPENCODE_UID:-1000}"
       OPENCODE_GID: "${OPENCODE_GID:-1000}"
       OPENCODE_HOME: "${OPENCODE_HOME:-/home/bun}"
@@ -69,7 +71,7 @@ services:
       - type: volume
         source: opencode-config
         target: ${OPENCODE_HOME:-/home/bun}/.config/opencode
-      # Per-instance authentication and session state.
+      # Per-instance authentication, sessions, and version-keyed CLI installs.
       - type: volume
         source: opencode-data
         target: ${OPENCODE_HOME:-/home/bun}/.local/share/opencode

@@ -38,7 +38,7 @@ Environment settings:
   Proxy flags affect build commands and containers; Docker/BuildKit image
   pulls use Docker/BuildKit's own proxy settings.
   OPENCODE_SERVER_PASSWORD: server password (Compose default: opencode)
-  BUN_VERSION, UV_VERSION, OPENCODE_VERSION: source-build version overrides
+  BUN_VERSION, UV_VERSION: source-build versions; OPENCODE_VERSION: runtime pin
   (defaults in versions.env). Other Compose settings remain available via env.
 
 Examples:
@@ -104,6 +104,7 @@ done
 
 workspace=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 mkdir -p "$workspace/projects"
+opencode_version_set=${OPENCODE_VERSION+x}
 
 # Pinned tool versions. versions.env only assigns defaults, so explicit
 # environment overrides survive. The same file drives local and CI builds.
@@ -114,7 +115,16 @@ if [ -f "$workspace/versions.env" ]; then
 fi
 # Guarantee the pins are visible to Compose's build-arg interpolation even if a
 # shell does not export parameter-expansion assignments.
-export BUN_VERSION UV_VERSION OPENCODE_VERSION
+export BUN_VERSION UV_VERSION
+# Keep Compose's .env precedence: only an explicit shell pin overrides .env.
+# The checkout default is passed separately, and also used by source builds.
+OPENCODE_DEFAULT_VERSION=$OPENCODE_VERSION
+export OPENCODE_DEFAULT_VERSION
+if [ "$opencode_version_set" = x ]; then
+    export OPENCODE_VERSION
+else
+    unset OPENCODE_VERSION
+fi
 
 # Run as the host user so mounted files keep the expected ownership. The image
 # entrypoint drops from root to these ids and owns only container state.

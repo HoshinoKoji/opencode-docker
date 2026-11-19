@@ -17,7 +17,7 @@ services:
       args:
         BUN_VERSION: ${BUN_VERSION:?load versions.env}
         UV_VERSION: ${UV_VERSION:?load versions.env}
-        OPENCODE_VERSION: ${OPENCODE_VERSION:?load versions.env}
+        OPENCODE_VERSION: ${OPENCODE_VERSION:-${OPENCODE_DEFAULT_VERSION:?load versions.env}}
         HTTP_PROXY: ${OPENCODE_HTTP_PROXY-${HTTP_PROXY-${http_proxy:-}}}
         HTTPS_PROXY: ${OPENCODE_HTTPS_PROXY-${HTTPS_PROXY-${https_proxy:-}}}
         ALL_PROXY: ${ALL_PROXY-${all_proxy:-}}

@@ -95,6 +95,7 @@ jobs:
           sh -n start.sh
           sh -n memory.sh
           sh -n docker/entrypoint.sh
+          sh -n docker/opencode.sh
           sh -n docker/smoke-tools.sh
 
       - name: Set up uv for the focused launcher checks
@@ -140,12 +141,33 @@ jobs:
       - name: Smoke test tools and argument passthrough
         run: |
           set -eu
+          docker volume create opencode-smoke-data
           docker run --rm \
+            -v opencode-smoke-data:/home/bun/.local/share/opencode \
             -v "$PWD/docker/smoke-tools.sh:/opt/smoke-tools.sh:ro" \
             -e BUN_VERSION -e UV_VERSION -e OPENCODE_VERSION \
             "${SMOKE_IMAGE}" sh /opt/smoke-tools.sh
           result=$(docker run --rm "${SMOKE_IMAGE}" sh -c 'printf "%s-%s\n" "$1" "$2"' sh alpha beta)
           test "$result" = "alpha-beta"
+
+      - name: Smoke test warm CLI cache without network
+        run: |
+          set -eu
+          docker run --rm --network none \
+            -v opencode-smoke-data:/home/bun/.local/share/opencode \
+            -v "$PWD/docker/smoke-tools.sh:/opt/smoke-tools.sh:ro" \
+            -e BUN_VERSION -e UV_VERSION -e OPENCODE_VERSION \
+            "${SMOKE_IMAGE}" sh /opt/smoke-tools.sh
+          # The same persisted install works after changing HOME and UID/GID.
+          docker run --rm --network none --workdir /tmp \
+            -v opencode-smoke-data:/tmp/warm-1500/.local/share/opencode \
+            -e OPENCODE_HOME=/tmp/warm-1500 \
+            -e OPENCODE_UID=1500 -e OPENCODE_GID=1500 -e OPENCODE_VERSION \
+            "${SMOKE_IMAGE}" opencode --version
+
+      - name: Remove smoke cache
+        if: always()
+        run: docker volume rm opencode-smoke-data || true
 
       - name: Test the chat memory plugin
         run: |
