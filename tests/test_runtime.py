@@ -222,7 +222,7 @@ def test_launcher_keeps_overrides_versions_and_paths_with_spaces(
         assert not bake_log.exists()
     assert not list(temporary.iterdir())
     assert versions_log.read_text().splitlines() == [
-        "9.8.7", opencode_override or "2.2.5", str(workspace / "config" / "opencode")
+        "9.8.7", opencode_override or "2.3.2", str(workspace / "config" / "opencode")
     ]
 
 

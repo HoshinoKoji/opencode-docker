@@ -368,7 +368,7 @@ and publishing. Explicit environment overrides win; there is no implicit
 | --- | --- |
 | Bun | `1.4.4` |
 | uv | `0.13.8` |
-| OpenCode | `2.2.5` |
+| OpenCode | `2.3.2` |
 
 For example, to build with a different pinned Bun version:
 
