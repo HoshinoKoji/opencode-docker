@@ -186,7 +186,7 @@ export class SQLiteMemoryStore extends MemoryStore {
     }, space);
   }
 
-  async atomic(relative, raw) {
+  async atomic(relative, raw, { section } = {}) {
     const { scope, name } = this.location(relative);
     const active = this.transaction.getStore();
     if (!active || active.scope !== scope) throw new Error("SQLite writes require a space transaction.");
@@ -203,8 +203,17 @@ export class SQLiteMemoryStore extends MemoryStore {
       if (seed && seed.id !== metadata.id) throw new Error("Document metadata identity changed.");
       const view = seed ? sync.view(seed.id) : null;
       if (view?.raw === raw) return;
-      sync.commit(sync.prepare({ id: operation, document: metadata.id, name,
-        kind: seed ? "full" : "create", content: raw }));
+      const edit = view && section !== undefined
+        ? sync.prepareSectionUpdate({ id: operation, document: metadata.id, section, raw, view }) : null;
+      if (edit) {
+        if (view.raw === edit.raw) return edit.raw;
+        sync.commit(edit.op);
+        raw = db.query("SELECT raw FROM sync_views WHERE id = ?").get(seed.id)?.raw;
+        if (raw !== edit.raw) throw new Error("Section sync projection diverged from the local edit.");
+      } else {
+        sync.commit(sync.prepare({ id: operation, document: metadata.id, name,
+          kind: seed ? "full" : "create", content: raw }));
+      }
     }
     const prior = db.query("SELECT head, raw FROM documents WHERE name = ?").get(name);
     if (!v2 && prior?.raw === raw) return;
@@ -214,6 +223,7 @@ export class SQLiteMemoryStore extends MemoryStore {
     if (!v2) db.query("INSERT INTO outbox VALUES (?)").run(operation);
     db.query(`INSERT INTO documents VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(name) DO UPDATE SET id=excluded.id, raw=excluded.raw, revision=excluded.revision, head=excluded.head`).run(name, metadata.id, raw, revision, operation);
+    return raw;
   }
 
   async locked(fn, scope) {

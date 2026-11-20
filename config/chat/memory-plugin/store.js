@@ -336,9 +336,9 @@ export class MemoryStore {
       if (body.length > 100000) throw new Error("Memory content must be at most 100000 characters.");
       const text = encode({ ...metadata, updated_at: now }, body);
       if (longTerm && space === "shared") await this.relocateShared();
-      await this.atomic(relative, text);
+      const written = await this.atomic(relative, text, { section });
       if (!longTerm) await this.rebuild(space);
-      return { scope: space, name, ...(section === undefined ? {} : { section }), revision: revision(text) };
+      return { scope: space, name, ...(section === undefined ? {} : { section }), revision: revision(written ?? text) };
     }, space);
   }
 

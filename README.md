@@ -753,9 +753,13 @@ reads/writes never upgrade them. After an explicit upgrade, records, updates,
 deletions and imports atomically persist sync operations, branch snapshots, stable section
 IDs, projections and the sync outbox. Runtime reads and exports use the current
 projection, including received changes and tombstones. Existing v1 history and
-pending outbox entries are retained. Runtime edits use conservative whole-document
-operations; heading IDs survive unchanged outlines, while structural rewrites
-start a new identity epoch. Section updates still preserve sibling text and metadata.
+pending outbox entries are retained. v2 section edits that keep the heading outline
+use stable section IDs and can merge across disjoint subtrees. Whole-document
+updates, heading structure changes, and the first update adding frontmatter to
+a legacy document use whole-document operations. Section edits preserve sibling
+text and metadata, and merge `updated_at` by maximum timestamp. Reload all
+plugin/CLI/MCP writers before creating or replaying these operations; older v2 code
+does not support the timestamped section payload. No additional schema upgrade is needed.
 
 First install this version for **every writer** and stop all writers, including
 already-loaded old plugins and MCP servers. Then, for each authorized space:

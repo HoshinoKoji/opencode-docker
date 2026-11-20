@@ -107,12 +107,16 @@ document ID and empty causal base. Empty seeds derive from that ID; the operatio
 carries the initial raw document and replicates creation. Name/identity collisions
 fail atomically. Retries reuse the saved record without appending operations when
 their payload still matches; a retry that differs after a body edit fails.
-Local modifications currently compile to **full-document** operations, even for
-public section updates, to preserve frontmatter timestamps and custom metadata
-atomically. Thus runtime edits to disjoint sections on separate devices can conflict;
-only explicit engine section operations currently get disjoint-subtree merging.
-This conservative boundary is deliberate until metadata-aware section operations
-are designed. Conflicts and tombstones block ordinary writes. The public
+On v2, ordinary `update` calls with `section` compile to **section** operations
+when the ordered heading outline is unchanged, the splice affects only the
+selected subtree, and the document already has frontmatter. The payload targets
+the stable section ID and includes the replacement subtree plus an ISO UTC
+`updatedAt`. The engine preserves all other metadata and uses the maximum of
+the current `updated_at` and the incoming timestamp. Disjoint edits therefore
+merge without losing either body change or rolling the section timestamp back.
+The returned revision hashes the actual written projection. Whole-body updates,
+outline changes and first-time frontmatter insertion fall back to whole-document
+operations. v1 behavior is unchanged. Conflicts and tombstones block ordinary writes. The public
 `delete` operation accepts only an existing session record with its current full
 revision. Its sync operation, branch snapshot, projection and outbox commit
 together. The tombstoned name and ID remain reserved against local record
@@ -140,7 +144,10 @@ within a subtree; callers must express moves as full replacements.
 
 Each operation contains a globally unique caller-supplied ID, space/genesis,
 document ID, sorted causal closure (`base`), kind (`section`, `full`, `delete`, `create`),
-target and content. Persist/retry the exact prepared object. Re-preparing after
+target and content. A section operation may additionally carry `updatedAt`;
+existing payloads without it remain readable. No schema change is needed, but
+reload all v2 writers before generating or replaying timestamped section operations:
+older v2 code does not understand the new payload. Persist/retry the exact prepared object. Re-preparing after
 observing more operations changes the causal base and is a different operation.
 
 Materialization validates each operation against its own causal base and saves
@@ -194,13 +201,16 @@ contention/retry. Runtime integration adds plugin execution across worktrees,
 real CLI and MCP stdio v1/v2 record/read/update, logicalPath contracts, read-only
 rejection, metadata/revision preservation, backed-up upgrade and dry-run, malformed
 history/operations, create replication, projection export and local-write rollback.
+Public section-write tests use two synthetic replicas and a relay, covering
+disjoint merges, same-section and parent/child conflicts, the maximum timestamp,
+stale revisions, malformed timestamp rollback, and structural fallback.
 The publish image's synthetic Bun check includes the sync suite.
 Verification after integration: **88 Bun tests passed** across plugin, CLI,
 SQLite, transfer, sync and MCP suites; **90 Python tests passed**; `git diff --check`
 passed. All data fixtures were synthetic.
 
-Next work is metadata-aware section operations, explicit conflict resolution and
-restoration, and operator bootstrap/local sync commands. Bootstrap currently has
+Next work is explicit conflict resolution and restoration, and operator
+bootstrap/local sync commands. Bootstrap currently has
 only synthetic tests: clone one coherent upgraded snapshot into new roots before
 editing, retaining the same space/genesis; do not independently upgrade replicas
 and assume they belong to one stream. There is no user-facing bootstrap or sync

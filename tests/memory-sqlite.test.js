@@ -324,10 +324,97 @@ test("explicit upgrade previews without writes, preserves v1 backup/history/outb
   expect((await syncStatus({ root })).pending).toBe(1);
   await store.connection("shared", (db) => {
     expect(db.query("SELECT * FROM outbox").all()).toEqual(original[2]);
-    const op = db.query("SELECT id FROM sync_operations").get();
+    const [op] = new SyncPrototype(db).pending();
+    expect(op).toMatchObject({ kind: "section", target: ids.at(-1).id, content: "## Detail\nnew\n\n" });
     expect(db.query("SELECT operation_id FROM versions WHERE operation_id = ?").get(op.id)).not.toBeNull();
   });
   await expect(run(["upgrade-sync", "--root", root, "--space", "both"])).rejects.toThrow("one explicit space");
+});
+
+for (const [label, rightSection, conflicts] of [
+  ["disjoint", "Goal", false],
+  ["same section", "Details", true],
+  ["parent and child", "Nested", true],
+]) test(`daily section updates on two v2 devices: ${label}`, async () => {
+  const root = await fixture(), left = createMemoryStore(root);
+  const { name, id } = await left.record("build", input, "section-sync");
+  await upgradeSync({ root });
+  const before = await read(left, { name });
+  const seed = await left.connection("shared", (db) => db.serialize());
+  async function replica() {
+    const root = await fixture();
+    await mkdir(path.join(root, ".memory-db"));
+    await writeFile(path.join(root, ".memory-db/shared.sqlite"), seed);
+    return createMemoryStore(root);
+  }
+  const right = await replica(), relay = await replica();
+  const pending = (store) => store.connection("shared", (db) => new SyncPrototype(db).pending());
+  const leftUpdate = { name, section: "Details", content: "## Details\nleft-body\n### Nested\nchild", expectedRevision: before.revision };
+  const edited = await left.update("build", leftUpdate);
+  const hashes = await left.connection("shared", (db) => [
+    db.query("SELECT revision FROM documents WHERE id = ?").get(id).revision,
+    db.query("SELECT revision FROM sync_views WHERE id = ?").get(id).revision,
+  ]);
+  expect(hashes).toEqual([edited.revision, edited.revision]);
+  await expect(left.update("build", leftUpdate)).rejects.toThrow("Memory changed");
+  const rightContent = { Goal: "## Goal\nright-goal", Details: "## Details\nright-body\n### Nested\nchild", Nested: "### Nested\nright-child" };
+  await right.update("build", { name, section: rightSection, content: rightContent[rightSection], expectedRevision: before.revision });
+  const [a] = await pending(left), [b] = await pending(right);
+  expect(a).toMatchObject({ document: id, kind: "section", content: "## Details\nleft-body\n### Nested\nchild\n\n" });
+  expect(typeof a.updatedAt).toBe("string");
+  expect(b.kind).toBe("section");
+  const dbs = await Promise.all([relay, left, right].map((store) => store.open("shared", true)));
+  try {
+    const [bridge, x, y] = dbs.map((db) => new SyncPrototype(db));
+    expect(() => bridge.push([b, { ...a, updatedAt: "2026-02-30T00:00:00.000Z" }])).toThrow("Malformed operation");
+    expect(bridge.operations()).toEqual([]);
+    bridge.push([b]);
+    bridge.push([a]);
+    const page = bridge.pull("test-relay");
+    x.receive(page); y.receive(page); x.receive(page);
+    expect(x.view(id)).toEqual(y.view(id));
+    expect(x.view(id)).toEqual(bridge.view(id));
+    expect(x.pending()).toEqual([]);
+    expect(y.pending()).toEqual([]);
+    const result = await read(left, { name });
+    expect(await read(right, { name })).toEqual(result);
+    if (conflicts) {
+      expect(x.view(id).conflicts).toHaveLength(1);
+      expect(result).toEqual(before);
+      const branches = dbs[1].query("SELECT raw FROM sync_versions ORDER BY id").all();
+      expect(branches).toHaveLength(2);
+      expect(branches.some(({ raw }) => raw.includes("left-body"))).toBe(true);
+      expect(branches.some(({ raw }) => raw.includes(rightContent[rightSection]))).toBe(true);
+      await expect(left.update("build", { ...leftUpdate, expectedRevision: result.revision })).rejects.toThrow("conflict resolution");
+    } else {
+      expect(x.view(id).conflicts).toEqual([]);
+      expect(result.text).toContain("left-body");
+      expect(result.text).toContain("right-goal");
+      expect(result.metadata).toEqual({ ...before.metadata, updated_at: [a.updatedAt, b.updatedAt].sort().at(-1) });
+    }
+  } finally { for (const db of dbs) db.close(); }
+});
+
+test("v2 structural edits use a full operation; section timestamps never regress even with a slower clock", async () => {
+  const root = await fixture(), store = createMemoryStore(root);
+  const future = "9999-01-01T00:00:00.000Z";
+  const metadata = { schema_version: 1, id: "time-fixture", type: "long_term", date: "2026-01-01", topic: "memory",
+    summary: "fixture", created_at: "2026-01-01T00:00:00.000Z", updated_at: future, custom: { preserved: true } };
+  await store.locked(() => store.atomic(store.relative("shared", "MEMORY.md"),
+    encode(metadata, "# Memory\n## First\nold\n## Last\nkeep\n")), "shared");
+  await upgradeSync({ root });
+  const before = await read(store);
+  const changed = await store.update("build", { section: "First", content: "## First\nnew", expectedRevision: before.revision });
+  const after = await read(store);
+  expect(changed.revision).toBe(after.revision);
+  expect(after.metadata).toEqual(metadata);
+  expect(after.text).toBe("# Memory\n## First\nnew\n\n## Last\nkeep\n");
+  await store.update("build", { section: "First", content: "## First\nnew\n### Added\nchild", expectedRevision: changed.revision });
+  await store.connection("shared", (db) => {
+    const ops = new SyncPrototype(db).pending().sort((a, b) => a.base.length - b.base.length);
+    expect(ops.map((op) => op.kind)).toEqual(["section", "full"]);
+    expect(ops[1].base).toEqual([ops[0].id]);
+  });
 });
 
 test("v2 runtime rollback includes operation, stable IDs, legacy history and pending queue", async () => {

@@ -1,6 +1,6 @@
 // Local sync engine. Runtime activation requires an explicit administrative upgrade.
 // The caller owns the connection and the authorization boundary.
-import { digest, decode } from "./format.js";
+import { digest, decode, encode } from "./format.js";
 import { sections } from "./sections.js";
 
 const fail = (message) => { throw new Error(message); };
@@ -8,6 +8,9 @@ const identifier = (value) => typeof value === "string" && /^[A-Za-z0-9_.:-]{1,1
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 const MAX_RAW = 1_000_000;
+const canonicalTimestamp = (value) => typeof value === "string" &&
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) &&
+  Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
 
 // Offsets include frontmatter, while headings are parsed only from the body.
 // Direct text stops at the next heading; subtree end includes descendants.
@@ -50,6 +53,14 @@ function apply(state, op) {
       nodes.find((node) => node.id === target.id)?.start !== target.start ||
       nodes.find((node) => node.id === target.id)?.end !== target.start + op.content.length) {
     fail("Structural section edit requires a full-document operation.");
+  }
+  if (op.updatedAt !== undefined) {
+    const { metadata, body } = decode(raw);
+    if (!metadata || metadata.id !== op.document) fail("Timestamped section updates require matching document metadata.");
+    // Commutative across disjoint edits, regardless of clock skew or replay order.
+    const updated_at = Date.parse(op.updatedAt) > Date.parse(metadata.updated_at) ? op.updatedAt : metadata.updated_at;
+    const stamped = encode({ ...metadata, updated_at }, body);
+    return { raw: stamped, nodes: outline(stamped, op.id, nodes.map((node) => node.id)), deleted: false };
   }
   return { raw, nodes, deleted: false };
 }
@@ -157,8 +168,9 @@ export class SyncPrototype {
   }
 
   normalize(input) {
+    const stamped = input?.kind === "section" && Object.hasOwn(input, "updatedAt");
     if (!input || typeof input !== "object" || Array.isArray(input) ||
-        !same(Object.keys(input).sort(), ["base", "content", "document", "genesis", "id", "kind", "space", "target", ...(input.kind === "create" ? ["name"] : [])].sort()) ||
+        !same(Object.keys(input).sort(), ["base", "content", "document", "genesis", "id", "kind", "space", "target", ...(input.kind === "create" ? ["name"] : []), ...(stamped ? ["updatedAt"] : [])].sort()) ||
         !identifier(input.id) || typeof input.document !== "string" ||
         input.space !== this.info.space || input.genesis !== this.info.genesis ||
         !Array.isArray(input.base) || input.base.length > 10000 || !input.base.every(identifier) ||
@@ -167,12 +179,14 @@ export class SyncPrototype {
         (input.kind === "create" && (input.base.length !== 0 || typeof input.name !== "string" ||
           !/^(MEMORY|\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:-[a-z0-9]+)*)\.md$/.test(input.name))) ||
         (input.kind === "section" ? !identifier(input.target) : input.target !== null) ||
+        (stamped && !canonicalTimestamp(input.updatedAt)) ||
         (input.kind === "delete" ? input.content !== null : typeof input.content !== "string" || input.content.length > MAX_RAW)) {
       fail("Malformed operation or space/genesis mismatch.");
     }
     // Canonical key order makes retries independent of JSON object key order.
     const { id, space, genesis, document, base, kind, target, content } = input;
-    return { id, space, genesis, document, base, kind, target, content, ...(kind === "create" ? { name: input.name } : {}) };
+    return { id, space, genesis, document, base, kind, target, content,
+      ...(kind === "create" ? { name: input.name } : {}), ...(stamped ? { updatedAt: input.updatedAt } : {}) };
   }
 
   operations() { return this.db.query("SELECT payload FROM sync_operations").all().map((row) => JSON.parse(row.payload)); }
@@ -238,10 +252,31 @@ export class SyncPrototype {
 
   // Compiling is read-only. Persist and retry this exact object after a lost
   // response; recompiling against newer dependencies is a different operation.
-  prepare({ id, document, kind = "section", target = null, content = null, name }) {
+  prepare({ id, document, kind = "section", target = null, content = null, name, updatedAt }) {
     return this.normalize({ id, space: this.info.space, genesis: this.info.genesis, document,
       base: this.operations().filter((op) => op.document === document).map((op) => op.id).sort(), kind, target, content,
-      ...(kind === "create" ? { name } : {}) });
+      ...(kind === "create" ? { name } : {}), ...(updatedAt !== undefined ? { updatedAt } : {}) });
+  }
+
+  // Compile a public section edit only if it can be represented as a splice of
+  // one existing subtree and an updated_at change. The caller holds a write lock.
+  prepareSectionUpdate({ id, document, section, raw, view }) {
+    const before = decode(view.raw), after = decode(raw);
+    if (!before.metadata || !after.metadata || !canonicalTimestamp(after.metadata.updated_at) ||
+        encode({ ...before.metadata, updated_at: after.metadata.updated_at }, after.body) !== raw) return null;
+    const previous = outline(view.raw, id, view.sections.map((node) => node.id));
+    const next = outline(raw, id);
+    if (!same(shape(previous), shape(next))) return null;
+    const targets = previous.filter((node) => node.title === section);
+    if (targets.length !== 1) return null;
+    const target = targets[0], replacement = next[target.position];
+    const content = raw.slice(replacement.start, replacement.end);
+    const left = view.raw.slice(view.raw.length - before.body.length, target.start);
+    const right = view.raw.slice(target.end);
+    if (left + content + right !== after.body) return null;
+    if (!sections(`${content}${"#".repeat(target.level)} boundary\n`).some((node) => node.start === content.length)) return null;
+    const op = this.prepare({ id, document, target: target.id, content, updatedAt: after.metadata.updated_at });
+    return { op, raw: apply({ raw: view.raw, nodes: previous, deleted: false }, op).raw };
   }
   commit(op) { this.db.transaction(() => this.#insert([op], true)).immediate(); return op; }
 
