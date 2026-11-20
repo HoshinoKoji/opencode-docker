@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { Database } from "bun:sqlite";
+import { SyncPrototype } from "../config/chat/memory-plugin/sync-prototype.js";
 
 const wrapper = path.resolve(import.meta.dir, "../memory.sh");
 const directories = [];
@@ -159,8 +160,73 @@ test("CLI edits and deletes one named session in its selected space", async () =
   expect(JSON.parse(call(["recall", "--space=private"]).stdout).spaces[0].recent).toEqual([]);
 });
 
+test("CLI conflict administration fails closed for absent or v1 spaces", async () => {
+  const { root, call } = await fixture();
+  const payload = JSON.stringify({ name: "MEMORY.md", expectedRevision: "1".repeat(64), conflictToken: "2".repeat(64), branchId: "left" });
+  for (const [args, input] of [[["conflicts", "MEMORY.md"]], [["resolve", "--input=-"], payload]]) {
+    expect(call(args, input).stderr).toContain("requires an existing SQLite schema v2");
+  }
+  expect(await readdir(root)).toEqual([]);
+  expect(call(["init"]).status).toBe(0);
+  const filename = path.join(root, ".memory-db/shared.sqlite");
+  const before = await readFile(filename);
+  for (const [args, input] of [[["conflicts", "MEMORY.md"]], [["resolve", "--input=-"], payload]]) {
+    const failure = call(args, input);
+    expect(failure.status).toBe(1);
+    expect(failure.stderr).toContain("requires SQLite schema v2");
+  }
+  expect(await readFile(filename)).toEqual(before);
+  expect((await readdir(path.dirname(filename))).filter((name) => name.includes(".v1-") || name.startsWith("private"))).toEqual([]);
+});
+
+test("CLI inspects exact scoped branches, resolves with a manual body, then inspects mixed tombstones", async () => {
+  const { root, call } = await fixture();
+  const run = (args, input) => call([...args, "--space=private"], input && JSON.stringify(input));
+  expect(run(["init"]).status).toBe(0);
+  expect(run(["upgrade-sync"]).status).toBe(0);
+  const { name, id, logicalPath } = JSON.parse(run(["record", "--input=-"], record).stdout);
+  const initial = JSON.parse(run(["read", name]).stdout).results[0];
+  const db = new Database(path.join(root, ".memory-db/private.sqlite"));
+  try {
+    const sync = new SyncPrototype(db);
+    const source = sync.view(id).raw;
+    const rewrite = (idForOp, text) => sync.prepare({ id: idForOp, document: id, kind: "full", content: source.replace(record.details, text) });
+    sync.push([rewrite("left", "left text"), rewrite("right", "right text")]);
+    expect(call(["conflicts", name]).stderr).toContain("existing SQLite schema v2");
+    expect(run(["conflicts", "2000-01-01-not-found.md"]).stderr).toContain("not found");
+    const inspected = JSON.parse(run(["conflicts", name]).stdout);
+    expect(inspected).toMatchObject({ scope: "private", name, logicalPath, id, revision: initial.revision,
+      deleted: false, conflicts: [["left", "right"]] });
+    expect(inspected.branches.map(({ raw }) => raw)).toEqual([source.replace(record.details, "left text"), source.replace(record.details, "right text")]);
+    const guarded = { name, expectedRevision: inspected.revision, conflictToken: inspected.conflictToken };
+    expect(run(["resolve", "--input=-"], { ...guarded, branchId: "missing" }).stderr).toContain("not an active conflict branch");
+    const result = run(["resolve", "--input=-"], { ...guarded, content: "# Merged\nleft and right\n" });
+    expect(result.status).toBe(0);
+    const resolved = JSON.parse(result.stdout);
+    expect(resolved).toMatchObject({ scope: "private", name, logicalPath, id });
+    expect(resolved.operationId).toMatch(/^[a-f0-9-]{36}$/);
+    expect(resolved.revision).toMatch(/^[a-f0-9]{64}$/);
+    expect(run(["resolve", "--input=-"], { ...guarded, content: "# Merged\nleft and right\n" }).stderr).toContain("Conflict state changed");
+    expect(JSON.parse(run(["read", name]).stdout).results[0]).toMatchObject({ text: "# Merged\nleft and right\n",
+      metadata: initial.metadata, revision: resolved.revision });
+    expect(JSON.parse(run(["conflicts", name]).stdout).branches).toEqual([]);
+    expect(run(["resolve", "--input=-"], { name, expectedRevision: resolved.revision,
+      conflictToken: JSON.parse(run(["conflicts", name]).stdout).conflictToken, content: "# Clean" }).stderr).toContain("requires active conflicts");
+    expect(run(["update", "--input=-"], { name, expectedRevision: resolved.revision, content: "# Merged\npost-resolution edit\n" }).status).toBe(0);
+    const deletion = sync.prepare({ id: "delete", document: id, kind: "delete" });
+    const late = sync.prepare({ id: "late", document: id, kind: "full", content: sync.view(id).raw.replace("post-resolution edit", "offline edit") });
+    sync.push([deletion, late]);
+    const tombstone = JSON.parse(run(["conflicts", name]).stdout);
+    expect(tombstone).toMatchObject({ deleted: true, conflicts: [["delete", "late"]] });
+    expect(run(["resolve", "--input=-"], { name, expectedRevision: tombstone.revision, conflictToken: tombstone.conflictToken,
+      branchId: "late" }).stderr).toContain("Tombstone recovery");
+    expect(JSON.parse(run(["read", name]).stdout).results[0]).toMatchObject({ text: "", metadata: null });
+  } finally { db.close(); }
+});
+
 test("invalid flags and JSON are rejected before any writes", async () => {
   const { root, call } = await fixture();
+  const guarded = { name: "MEMORY.md", expectedRevision: "1".repeat(64), conflictToken: "2".repeat(64) };
   const invalid = [
     [["record"], ""],
     [["record", "--space=both", "--input=-"], JSON.stringify(record)],
@@ -174,6 +240,15 @@ test("invalid flags and JSON are rejected before any writes", async () => {
     [["delete", "--input=-"], '{"name":"2000-01-01-topic.md"}'],
     [["delete", "--input=-"], '{"name":"2000-01-01-topic.md","expectedRevision":"r","section":"not allowed"}'],
     [["delete", "--space=both", "--input=-"], '{"name":"2000-01-01-topic.md","expectedRevision":"r"}'],
+    [["conflicts", "--space=both", "MEMORY.md"], ""],
+    [["conflicts", "../MEMORY.md"], ""],
+    [["conflicts", "INDEX.md"], ""],
+    [["resolve", "--input=-", "--space=both"], JSON.stringify({ ...guarded, branchId: "left" })],
+    [["resolve", "--input=-"], JSON.stringify(guarded)],
+    [["resolve", "--input=-"], JSON.stringify({ ...guarded, branchId: "left", content: "ambiguous" })],
+    [["resolve", "--input=-"], JSON.stringify({ ...guarded, branchId: "left", conflictToken: "bad" })],
+    [["resolve", "--input=-"], JSON.stringify({ ...guarded, content: "---\nid: forged\n---\ntext" })],
+    [["resolve", "--input=-"], JSON.stringify({ ...guarded, content: "text", scope: "private" })],
     [["recall", "--limit", "2"], ""],
     [["search", "query", "--limit=21"], ""],
     [["read", "MEMORY.md", "--offset=-1"], ""],

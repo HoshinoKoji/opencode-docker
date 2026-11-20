@@ -758,8 +758,9 @@ use stable section IDs and can merge across disjoint subtrees. Whole-document
 updates, heading structure changes, and the first update adding frontmatter to
 a legacy document use whole-document operations. Section edits preserve sibling
 text and metadata, and merge `updated_at` by maximum timestamp. Reload all
-plugin/CLI/MCP writers before creating or replaying these operations; older v2 code
-does not support the timestamped section payload. No additional schema upgrade is needed.
+plugin/CLI/MCP writers and sync engines before creating or replaying timestamped
+section or resolution operations. Older v2 code cannot replay them; no additional
+schema upgrade is needed.
 
 First install this version for **every writer** and stop all writers, including
 already-loaded old plugins and MCP servers. Then, for each authorized space:
@@ -777,10 +778,28 @@ agent/MCP tools. Restart only updated writers after upgrade. Old runtime code
 rejects v2; stopping writers prevents an already-open old connection from writing
 the old tables after migration. See [upgrade, rollback and limitations](docs/memory-sync-milestone.md).
 
-This is local write integration plus an embedded synthetic relay engine. Conflict
-resolution/restoration, operator bootstrap/sync commands, Cloudflare transport,
-encryption and a general backup/restore CLI remain deferred. Conflicted/tombstoned
-documents block ordinary writes; inspect `sync-status` and retain the database.
+Conflicted documents block ordinary writes. Inspect and resolve one exact document
+in one authorized v2 space (shared by default; `both` is rejected):
+
+```bash
+./memory.sh conflicts MEMORY.md --root "$MEMORY_ROOT" --space shared
+./memory.sh resolve --root "$MEMORY_ROOT" --space shared --input resolution.json
+```
+
+In `resolution.json`, set `name` to the exact inspected filename, `expectedRevision`
+to the returned `revision`, and `conflictToken` to the returned token. Add either
+`branchId` (a returned `branches[].operationId`) or `content` (a complete merged
+Markdown body without YAML). Simple section selection keeps independent visible
+edits. Multiple pairs, dependent branches or a selection that could drop visible
+edits require a manual body. A manual merge resolves all pairs shown for that
+document; include the visible edits you want to keep. Both modes preserve visible
+metadata and history. Inspect again if the token is stale, even if the revision
+is unchanged. Inspection includes raw text; use it only in an authorized context.
+These are CLI-only administrative commands; caller permissions and consent still apply.
+
+Tombstones may be inspected but cannot be resolved or restored; late deletes still
+hide resolved documents. Operator bootstrap/push/pull commands, Cloudflare transport,
+encryption and a general backup/restore CLI remain deferred.
 Local storage and sync execution are trusted plaintext; optional encryption
 belongs at upload/download boundaries.
 See also [runtime architecture and references](docs/memory-sqlite-milestone.md).

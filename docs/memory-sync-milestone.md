@@ -12,14 +12,14 @@ commit or push was performed.
 - `migratePrototypeV2(db, { spaceId, synthetic: true })` upgrades an isolated v1
   connection transactionally for synthetic fixtures. `migrateSyncV2` is the shared
   migration implementation used by the backed-up administrative upgrade.
-- `SyncPrototype(db)` exposes `prepare`, `commit`, `pending`, `push`,
-  `acknowledge`, `pull`, `receive`, `view` and `operations`. The same class serves
+- `SyncPrototype(db)` exposes `prepare`, `commit`, `inspect`, `resolve`, `pending`,
+  `push`, `acknowledge`, `pull`, `receive`, `view` and `operations`. The same class serves
   as a device and as the local SQLite relay in the simulator.
 
 `SQLiteMemoryStore` now uses the engine for v2 ordinary writes. Both versions
 support plugin, CLI and MCP; public session deletion requires v2. New databases still initialize as v1. No runtime open
 or ordinary write upgrades a database. `synthetic: true` remains a fixture assertion,
-not a sandbox. Operators use only the explicit `upgrade-sync` command below.
+not a sandbox. Operators upgrade only through the explicit `upgrade-sync` command below.
 
 The simulator accepts caller-owned database connections rather than discovering
 roots or worktrees. Its executable usage examples are the fixtures in
@@ -73,7 +73,7 @@ byte-for-byte unchanged. Historical whole-document snapshots are retained. New t
 | `sync_info`, `sync_seed` | Space ID, shared genesis fingerprint and immutable starting documents |
 | `sync_operations`, `sync_versions` | Canonical operation payloads and immutable per-operation branch snapshots |
 | `sync_views`, `sync_sections` | Materialized raw documents, revision/tombstone, stable section IDs and direct text |
-| `sync_conflicts` | Concurrent overlapping operation pairs |
+| `sync_conflicts` | Active concurrent overlapping operation pairs |
 | `sync_outbox`, `sync_log` | Pending local operations and append-only relay sequence |
 | `sync_cursor`, `sync_inbox` | One relay stream's durable cursor and sequence-to-operation bindings |
 
@@ -143,11 +143,11 @@ through renames or moves. Identical-looking duplicate headings remain positional
 within a subtree; callers must express moves as full replacements.
 
 Each operation contains a globally unique caller-supplied ID, space/genesis,
-document ID, sorted causal closure (`base`), kind (`section`, `full`, `delete`, `create`),
+document ID, sorted causal closure (`base`), kind (`section`, `full`, `delete`, `create`, `resolve`),
 target and content. A section operation may additionally carry `updatedAt`;
 existing payloads without it remain readable. No schema change is needed, but
-reload all v2 writers before generating or replaying timestamped section operations:
-older v2 code does not understand the new payload. Persist/retry the exact prepared object. Re-preparing after
+reload all v2 writers and sync engines before generating or replaying timestamped
+section or resolution operations: older v2 code cannot replay them. Persist/retry the exact prepared object. Re-preparing after
 observing more operations changes the causal base and is a different operation.
 
 Materialization validates each operation against its own causal base and saves
@@ -157,15 +157,78 @@ overlap conservatively. Both overlapping operations and their descendants are
 excluded from the visible projection, with all operations and branch snapshots
 retained. Unaffected concurrent edits remain visible. Thus learning a late
 conflict can return the visible affected text to its common base rather than
-choosing a winner. Conflicts freeze further local edits to that document until
-explicit resolution is implemented; this prototype does not claim resolution UI.
+choosing a winner. Ordinary edits to a conflicted document remain blocked until
+explicit operator resolution.
 
 Document deletion is an enduring tombstone. A concurrent edit is preserved as a
 conflict branch, and the visible document remains deleted. `view()` returns the
 `deleted` flag alongside retained raw text for diagnostics; consumers must honor
-that flag. Edits causally after deletion fail. Restore, section deletion as a
-separate operation, pruning and garbage collection are deferred. Section removal
-can currently be expressed only by a full-document structural rewrite.
+that flag. Edits and resolutions causally after deletion fail. Even a late,
+concurrent delete keeps the document hidden. Tombstone resolution/restoration,
+section deletion as a separate operation, pruning and garbage collection are
+deferred. Section removal requires a full-document structural rewrite.
+
+## Local conflict inspection and resolution
+
+```sh
+./memory.sh conflicts 2026-01-01-topic.md --root /absolute/database-root --space shared
+./memory.sh resolve --root /absolute/database-root --space shared --input resolution.json
+```
+
+Use `MEMORY.md` or an exact session filename, not a logical path or `INDEX.md`.
+One authorized space per command (shared by default; `private` is opt-in).
+Neither command initializes or upgrades a database. `conflicts` opens the
+database read-only and returns a consistent snapshot: identity, visible `raw`
+and `revision`, `deleted`, `conflictToken`, active operation ID pairs in
+`conflicts`, and `branches` with raw snapshots of the pair endpoints and their
+affected descendants. Inspect output includes plaintext history from the selected
+document. A clean document has empty `conflicts` and `branches`.
+
+Supply JSON via `--input FILE` or `--input -`:
+
+```json
+{
+  "name": "2026-01-01-topic.md",
+  "expectedRevision": "<revision from conflicts>",
+  "conflictToken": "<conflictToken from conflicts>",
+  "branchId": "<branches[].operationId from conflicts>"
+}
+```
+
+Use `content` instead of `branchId` to submit a complete, non-empty merged
+Markdown body without YAML. A manual merge resolves **all active pairs shown in
+that inspection for that document**. Start from the visible `raw` body and review
+each branch, including dependent edits, to retain the edits you want. Branch
+selection is allowed only for a single pair with no affected descendants. When
+both arms are section edits, selection grafts the chosen subtree onto the visible
+baseline. Any visible operation outside the arms' common history must be disjoint
+from that graft. Whole-document snapshot selection requires all visible operations
+to be in the arms' common history. If selection is ambiguous or could lose an
+independent edit, supply a manual merge instead.
+
+Both modes preserve the visible frontmatter (including `updated_at`, or absence
+of frontmatter on legacy documents) and document ID. Branches with different
+metadata stay intact in history. Under a SQLite write lock, resolution compares
+both the visible revision and a token hashing the exact document operation
+payloads, active pairs, tombstone state and space/genesis identity. Re-inspect on
+mismatch, even when the visible raw text has not changed. On success the CLI
+returns the new `operationId` and projected `revision` with document identity.
+For an uncertain CLI outcome, re-inspect; it does not issue a second resolution
+using an old token. Relay retries replay the exact operation. `conflicts` may
+show a tombstone and its branches, but `resolve` rejects it in both modes. These
+are operator-only CLI commands; caller scope, consent and read-only restrictions apply.
+
+A resolution is a conservative whole-document operation. Its complete `base`
+references the inspected history; replay derives the exact active pairs from
+that closure, rejects a clean or deleted base, and computes the resolved snapshot
+from that same base. It is the only operation allowed to build on a conflicted
+base. A resolved pair stays historical and keeps its original branches out of the
+projection; the resolution and causal descendants can cross that pair. Concurrent
+resolutions conflict with each other. A late edit or resolution concurrent with
+the resolution creates new pairs, even if a section edit would previously have
+been disjoint. These pairs and affected snapshots stay available for a new explicit
+resolution; old resolutions never clear pairs absent from their causal view.
+History is immutable; the resolution changes projection, not old snapshots.
 
 ## Retry and transaction protocol
 
@@ -204,13 +267,15 @@ history/operations, create replication, projection export and local-write rollba
 Public section-write tests use two synthetic replicas and a relay, covering
 disjoint merges, same-section and parent/child conflicts, the maximum timestamp,
 stale revisions, malformed timestamp rollback, and structural fallback.
-The publish image's synthetic Bun check includes the sync suite.
-Verification after integration: **88 Bun tests passed** across plugin, CLI,
-SQLite, transfer, sync and MCP suites; **90 Python tests passed**; `git diff --check`
-passed. All data fixtures were synthetic.
+Resolution tests cover same-section/ancestor selection with a disjoint visible
+edit, exact token guards even for unchanged raw and pairs, manual merges and
+dependent history, replay/duplicates, late/concurrent resolutions and edits,
+tombstone races, malformed-page rollback and the v1 CLI boundary. The publish
+image's synthetic Bun check includes the sync suite. Verification for local
+resolution: 111 Bun tests, 113 Python tests, and `git diff --check` passed.
 
-Next work is explicit conflict resolution and restoration, and operator
-bootstrap/local sync commands. Bootstrap currently has
+Remaining work includes tombstone restoration and operator bootstrap/local sync
+commands. Bootstrap currently has
 only synthetic tests: clone one coherent upgraded snapshot into new roots before
 editing, retaining the same space/genesis; do not independently upgrade replicas
 and assume they belong to one stream. There is no user-facing bootstrap or sync

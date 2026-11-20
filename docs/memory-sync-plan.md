@@ -102,4 +102,6 @@ INDEX 作为数据库派生视图提供兼容结果，不再维护第二份权�
 
 升级前安装所有写入端的新版本并停止全部写入端（包括已加载的旧插件），运行 `./memory.sh upgrade-sync --root /absolute/database-root --space shared --dry-run`，确认后去掉 `--dry-run`。实际升级在写锁内生成并 fsync 独立 v1 备份，事务升级并返回 backupPath；原有版本和旧 outbox 保留。用 `./memory.sh sync-status --root /absolute/database-root --space shared` 查看本地状态。每次管理一个授权空间，旧运行时代码拒绝 v2。完整回退步骤见同步集成里程碑。
 
-冲突解决/恢复、面向操作者的 bootstrap/推拉命令、Worker/D1、可选加密与通用备份恢复 CLI 仍待实现。普通写入遇到冲突或 tombstone 会阻止覆盖。没有云同步、部署或后台网络循环。
+v2 本地 CLI 已支持 `conflicts NAME` 和 `resolve --input FILE|-`：每次操作一个授权空间和一个确切文件名。解决操作同时校验可见 revision 和完整因果状态 token，保留可见元数据、ID、分支历史及独立的可见编辑；复杂分支需手工合并完整 Markdown。重放仅解决该操作因果闭包内的已见冲突对，迟到编辑和并发解决会形成新的冲突。无需再次升级 schema，使用前须更新并重新加载所有 v2 写入端和同步引擎。
+
+tombstone 可检查但不会恢复。恢复、面向操作者的 bootstrap/推拉命令、Worker/D1、可选加密与通用备份恢复 CLI 仍待实现。普通写入遇到冲突或 tombstone 会阻止覆盖。没有云同步、部署或后台网络循环。

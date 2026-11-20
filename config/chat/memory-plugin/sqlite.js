@@ -47,7 +47,7 @@ export class SQLiteMemoryStore extends MemoryStore {
       : super.updateMetadata(scope, document, now);
   }
 
-  async open(scope, writing = false) {
+  async open(scope, writing = false, { requireSync = false } = {}) {
     this.relative(scope, "MEMORY.md");
     const directory = await this.checked(".memory-db");
     const filename = await this.checked(`.memory-db/${scope}.sqlite`);
@@ -56,13 +56,15 @@ export class SQLiteMemoryStore extends MemoryStore {
       if (!(await lstat(filename)).isFile()) throw new Error("Memory database must be a regular file.");
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
+      if (requireSync) throw new Error("Conflict administration requires an existing SQLite schema v2 space.");
       if (!writing) return null;
       await mkdir(directory, { recursive: true, mode: 0o700 });
     }
-    const db = new Database(filename, { readonly: !writing, strict: true });
+    const db = new Database(filename, { readonly: !writing, create: writing && !requireSync, strict: true });
     try {
       db.exec("PRAGMA busy_timeout = 100; PRAGMA foreign_keys = ON;");
       const version = db.query("PRAGMA user_version").get().user_version;
+      if (requireSync && version !== 2) throw new Error("Conflict administration requires SQLite schema v2. Use upgrade-sync explicitly with writers stopped.");
       if (![0, 1, 2].includes(version)) throw new Error(`Unsupported memory database schema: ${version}.`);
       if (writing) {
         chmodSync(filename, 0o600);

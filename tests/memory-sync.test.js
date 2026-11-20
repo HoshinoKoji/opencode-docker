@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
-import { digest, encode } from "../config/chat/memory-plugin/format.js";
+import { decode, digest, encode } from "../config/chat/memory-plugin/format.js";
 import { migratePrototypeV2, SyncPrototype } from "../config/chat/memory-plugin/sync-prototype.js";
 import { SQLiteMemoryStore } from "../config/chat/memory-plugin/sqlite.js";
 
@@ -196,6 +196,214 @@ test("late overlap blocks causal descendants while retaining their complete bran
   a.push([overlap]); b.push([descendant, first]);
   expect(a.view("doc")).toEqual(b.view("doc")); expect(a.view("doc").raw).toBe(raw);
   expect(a.db.query("SELECT raw FROM sync_versions WHERE id = 'descendant'").get().raw).toContain("descendant");
+});
+
+function resolve(d, id, choice, inspection = d.inspect("doc")) {
+  return d.resolve({ id, document: "doc", expectedRevision: inspection.revision, conflictToken: inspection.conflictToken, ...choice });
+}
+
+for (const title of ["Alpha", "Child"]) {
+  test(`resolution selects the ${title} branch without overwriting a safe sibling; replay permits sequential edits`, () => {
+    const a = device(), b = device(), relay = device();
+    const left = edit(a, "left", "Alpha", alpha("left"));
+    const right = title === "Alpha" ? edit(a, "right", title, alpha("right"))
+      : edit(a, "right", title, "### Child\nright\n");
+    const safe = edit(a, "safe", "Beta", beta("safe edit"));
+    a.push([left, right, safe]);
+    const inspect = a.inspect("doc");
+    expect(inspect.conflicts).toEqual([["left", "right"]]);
+    expect(inspect.branches.map(({ operationId }) => operationId)).toEqual(["left", "right"]);
+    expect(inspect.branches[1].raw).not.toContain("safe edit");
+    expect(inspect.raw).toContain("safe edit");
+    expect(() => resolve(a, "not-active", { branchId: "safe" })).toThrow("not an active conflict branch");
+    const result = resolve(a, "resolved", { branchId: "right" });
+    expect(a.view("doc").raw).toContain("right");
+    expect(a.view("doc").raw).toContain("safe edit");
+    expect(decode(a.view("doc").raw).metadata).toEqual(metadata);
+    expect(a.view("doc").revision).toBe(result.revision);
+    expect(a.view("doc").conflicts).toEqual([]);
+    const resolution = a.pending()[0];
+    expect(resolution).toMatchObject({ kind: "resolve", base: ["left", "right", "safe"], target: "right", content: null });
+    const post = a.commit(edit(a, "post", "Beta", beta("sequential")));
+    relay.push([post, resolution, safe, right, left]);
+    const page = relay.pull("relay");
+    b.receive(page); b.receive(page);
+    expect(relay.push([resolution])[0].id).toBe("resolved");
+    expect(b.view("doc")).toEqual(a.view("doc"));
+    expect(b.view("doc").raw).toContain("sequential");
+    expect(b.db.query("SELECT id, raw, deleted FROM sync_versions ORDER BY id").all())
+      .toEqual(a.db.query("SELECT id, raw, deleted FROM sync_versions ORDER BY id").all());
+    expect(b.operations()).toHaveLength(5);
+    expect(a.db.query("SELECT operation_id FROM versions ORDER BY operation_id").all()).toEqual([
+      { operation_id: "old" }, { operation_id: "seed" },
+    ]);
+  });
+}
+
+test("a conflict token guards the exact causal state even when raw and conflict pairs are unchanged", () => {
+  const a = device();
+  const left = edit(a, "left", "Alpha", alpha("left"));
+  const right = edit(a, "right", "Alpha", alpha("right"));
+  const noChange = edit(a, "no-change", "Beta", beta("old B"));
+  a.push([left, right]);
+  const before = a.inspect("doc");
+  a.push([noChange]);
+  const after = a.inspect("doc");
+  expect(after.revision).toBe(before.revision);
+  expect(after.conflicts).toEqual(before.conflicts);
+  expect(after.conflictToken).not.toBe(before.conflictToken);
+  expect(() => resolve(a, "stale", { branchId: "left" }, before)).toThrow("Conflict state changed");
+  expect(() => resolve(a, "wrong-revision", { branchId: "left" }, { ...after, revision: "0".repeat(64) })).toThrow("Conflict state changed");
+  expect(a.pending()).toEqual([]);
+  expect(a.inspect("doc")).toEqual(after);
+  resolve(a, "manual", { content: body }, after);
+  expect(a.inspect("doc").revision).toBe(before.revision);
+  expect(a.inspect("doc").conflictToken).not.toBe(after.conflictToken);
+  expect(a.inspect("doc").conflicts).toEqual([]);
+});
+
+test("multiple pairs or dependent edits require a manual merge and keep all branch history", () => {
+  const a = device(), b = device();
+  const left = a.commit(edit(a, "left", "Alpha", alpha("left")));
+  const descendant = a.commit(edit(a, "dependent", "Beta", beta("dependent")));
+  const right = edit(b, "right", "Child", "### Child\nright\n");
+  a.push([right]);
+  expect(a.inspect("doc").conflicts).toEqual([["left", "right"]]);
+  expect(a.inspect("doc").branches.map(({ operationId }) => operationId)).toEqual(["dependent", "left", "right"]);
+  expect(() => resolve(a, "automatic", { branchId: "left" })).toThrow("dependent edits");
+  const beta1 = edit(b, "beta1", "Beta", beta("beta 1")), beta2 = edit(b, "beta2", "Beta", beta("beta 2"));
+  a.push([beta1, beta2]);
+  expect(a.inspect("doc").conflicts.map((pair) => pair.join("/"))).toContain("beta1/beta2");
+  expect(() => resolve(a, "automatic", { branchId: "dependent" })).toThrow("explicit merged Markdown");
+  const merged = body.replace("old A", "left").replace("old child", "right").replace("old B", "manual merge");
+  resolve(a, "manual", { content: merged });
+  expect(a.view("doc").raw).toBe(encode(metadata, merged));
+  expect(a.inspect("doc").conflicts).toEqual([]);
+  b.push([a.pending().find(({ id }) => id === "manual"), beta2, beta1, descendant, right, left]);
+  expect(b.inspect("doc")).toEqual(a.inspect("doc"));
+  expect(b.db.query("SELECT count(*) AS n FROM sync_versions").get().n).toBe(6);
+});
+
+test("snapshot selection refuses a branch missing a visible edit", () => {
+  const a = device(), b = device();
+  a.commit(edit(a, "safe", "Beta", beta("safe edit")));
+  a.commit(a.prepare({ id: "left", document: "doc", kind: "full", content: a.view("doc").raw.replace("intro", "full edit") }));
+  a.push([edit(b, "right", "Alpha", alpha("right"))]);
+  expect(a.inspect("doc").conflicts).toEqual([["left", "right"]]);
+  expect(a.inspect("doc").raw).toContain("safe edit");
+  expect(() => resolve(a, "loss", { branchId: "right" })).toThrow("may discard visible edits");
+  expect(a.view("doc").raw).toContain("safe edit");
+  resolve(a, "merged", { content: body.replace("old A", "right").replace("old B", "safe edit") });
+  expect(a.view("doc").raw).toContain("right");
+  expect(a.view("doc").raw).toContain("safe edit");
+});
+
+test("a parent graft refuses to erase a visible child edit outside the overlap between the arms", () => {
+  const a = device(), b = device();
+  const setup = a.commit(a.prepare({ id: "setup", document: "doc", kind: "full",
+    content: raw.replace("## Beta", "### Sibling\nold sibling\n## Beta") }));
+  b.push([setup]);
+  a.commit(edit(a, "safe", "Child", "### Child\nsafe child edit\n"));
+  a.commit(edit(a, "parent", "Alpha", alpha("parent edit") + "### Sibling\nold sibling\n"));
+  a.push([edit(b, "sibling", "Sibling", "### Sibling\nchanged sibling\n")]);
+  expect(a.inspect("doc").conflicts).toEqual([["parent", "sibling"]]);
+  expect(() => resolve(a, "loss", { branchId: "parent" })).toThrow("may discard visible edits");
+  resolve(a, "keep-safe", { branchId: "sibling" });
+  expect(a.view("doc").raw).toContain("safe child edit");
+  expect(a.view("doc").raw).toContain("changed sibling");
+});
+
+test("concurrent resolutions and late edits create new pairs and converge without erasing any branch", () => {
+  const a = device(), b = device(), reverse = device();
+  const left = edit(a, "left", "Alpha", alpha("left"));
+  const right = edit(a, "right", "Alpha", alpha("right"));
+  const late = edit(a, "late", "Beta", beta("unseen safe until resolution"));
+  a.push([left, right]); b.push([right, left]);
+  resolve(a, "resolved-a", { branchId: "left" });
+  resolve(b, "resolved-b", { branchId: "right" });
+  const [first] = a.pending(), [second] = b.pending();
+  const post = a.commit(edit(a, "post", "Child", "### Child\npost resolution edit\n"));
+  a.push([second, late]); b.push([late, post, first]); reverse.push([post, late, second, first, left, right]);
+  const inspect = a.inspect("doc");
+  expect(b.inspect("doc")).toEqual(inspect); expect(reverse.inspect("doc")).toEqual(inspect);
+  expect(inspect.raw).toBe(raw);
+  expect(inspect.conflicts).toEqual([["late", "resolved-a"], ["late", "resolved-b"], ["post", "resolved-b"], ["resolved-a", "resolved-b"]]);
+  expect(inspect.branches.find(({ operationId }) => operationId === "post").raw).toContain("post resolution edit");
+  expect(() => resolve(a, "no", { branchId: "left" })).toThrow("not an active conflict branch");
+  expect(() => resolve(a, "no", { branchId: "resolved-b" })).toThrow("explicit merged Markdown");
+  const merged = body.replace("old A", "chosen edit").replace("old B", "unseen safe until resolution");
+  resolve(a, "reconciled", { content: merged });
+  b.push([a.pending().find(({ id }) => id === "reconciled")]);
+  expect(b.inspect("doc")).toEqual(a.inspect("doc"));
+  expect(b.view("doc").raw).toBe(encode(metadata, merged));
+  expect(b.view("doc").conflicts).toEqual([]);
+  expect(b.db.query("SELECT count(*) AS n FROM sync_versions").get().n).toBe(7);
+});
+
+test("late overlapping edits reopen only new pairs, including pairs with previously resolved arms", () => {
+  const a = device(), b = device();
+  const left = edit(a, "left", "Alpha", alpha("left"));
+  const right = edit(a, "right", "Alpha", alpha("right"));
+  const late = edit(a, "late", "Child", "### Child\nlate\n");
+  a.push([left, right]);
+  resolve(a, "resolution", { branchId: "left" });
+  const [resolution] = a.pending();
+  a.push([late]); b.push([late, right]); b.push([resolution, left]);
+  expect(a.inspect("doc")).toEqual(b.inspect("doc"));
+  expect(b.inspect("doc").conflicts).toEqual([["late", "left"], ["late", "resolution"], ["late", "right"]]);
+  expect(b.inspect("doc").branches.map(({ operationId }) => operationId)).toEqual(["late", "left", "resolution", "right"]);
+  expect(b.view("doc").raw).toBe(raw);
+});
+
+test("full-branch resolution preserves the visible metadata, and remains hidden after a late tombstone", () => {
+  const a = device(), b = device();
+  const left = a.prepare({ id: "left", document: "doc", kind: "full", content: encode({ ...metadata, custom: "branch value" }, body.replace("intro", "full edit")) });
+  const right = edit(a, "right", "Alpha", alpha("right"));
+  a.push([left, right]);
+  resolve(a, "resolved", { branchId: "left" });
+  expect(a.view("doc").raw).toBe(encode(metadata, body.replace("intro", "full edit")));
+  b.push([right, left, a.pending()[0]]);
+  const deletion = b.prepare({ id: "delete", document: "doc", kind: "delete" });
+  const stale = edit(b, "stale", "Beta", beta("offline edit after resolution"));
+  a.push([deletion, stale]); b.push([stale, deletion]);
+  expect(a.inspect("doc")).toEqual(b.inspect("doc"));
+  expect(a.inspect("doc")).toMatchObject({ deleted: true, conflicts: [["delete", "stale"]] });
+  expect(a.inspect("doc").branches.find(({ operationId }) => operationId === "delete").deleted).toBe(true);
+  expect(() => resolve(a, "restore", { branchId: "stale" })).toThrow("Tombstone recovery");
+  expect(() => resolve(a, "restore", { content: body })).toThrow("Tombstone recovery");
+  expect(a.db.query("SELECT raw, deleted FROM sync_versions WHERE id = 'resolved'").get()).toEqual({
+    raw: encode(metadata, body.replace("intro", "full edit")), deleted: 0,
+  });
+  const c = device();
+  const offlineDeletion = c.prepare({ id: "offline-delete", document: "doc", kind: "delete" });
+  c.push([offlineDeletion]); c.push([a.pending()[0], left, right]);
+  expect(c.inspect("doc").deleted).toBe(true);
+  expect(c.inspect("doc").conflicts).toContainEqual(["offline-delete", "resolved"]);
+  expect(c.inspect("doc").branches.find(({ operationId }) => operationId === "resolved").raw).toContain("full edit");
+});
+
+test("malformed and falsely based resolution operations roll back complete pages", () => {
+  const a = device(), b = device();
+  const left = edit(a, "left", "Alpha", alpha("left"));
+  const right = edit(a, "right", "Alpha", alpha("right"));
+  a.push([left, right]);
+  resolve(a, "resolution", { branchId: "left" });
+  const [good] = a.pending();
+  for (const [change, message] of [
+    [{ target: "missing" }, "not an active conflict branch"],
+    [{ base: ["left"] }, "requires active conflicts"],
+    [{ target: null, content: "---\na: replaced\n---\nbody" }, "Malformed operation"],
+    [{ content: body }, "Malformed operation"],
+  ]) {
+    expect(() => b.receive({ stream: "relay", after: 0, entries: [left, right, { ...good, ...change }]
+      .map((operation, index) => ({ operation, sequence: index + 1 })) })).toThrow(message);
+    for (const table of ["sync_operations", "sync_versions", "sync_outbox", "sync_conflicts", "sync_log", "sync_inbox", "sync_cursor"]) {
+      expect(b.db.query(`SELECT count(*) AS n FROM ${table}`).get().n).toBe(0);
+    }
+    expect(b.view("doc").raw).toBe(raw);
+  }
+  b.push([left, right, good]);
+  expect(b.view("doc")).toEqual(a.view("doc"));
 });
 
 test("malformed mixed batch and missing dependency roll back apply/history/outbox/log/cursor", () => {

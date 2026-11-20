@@ -65,7 +65,9 @@ database/backup paths appear only in administrative results. Both schema v1 and
 explicitly upgraded v2 support record and update; deletion requires v2.
 `upgrade-sync --dry-run` and
 `upgrade-sync` are operator administration with stopped writers and a v1 backup;
-ordinary tools never upgrade databases. Conflicts/restoration need future tooling.
+ordinary tools never upgrade databases. The CLI-only `conflicts` and `resolve`
+commands are operator administration; see the README before use. Tombstone
+restoration remains deferred.
 
 ## Read
 

@@ -4,6 +4,8 @@ import path from "node:path";
 import { createMemoryStore } from "./backend.js";
 import { importMarkdown, exportMarkdown, safeRoot } from "./transfer.js";
 import { upgradeSync, syncStatus } from "./upgrade.js";
+import { conflictName, documentConflicts } from "./sync-admin.js";
+import { MAX_SYNC_RAW, resolutionChoice } from "./sync-prototype.js";
 
 const help = `Usage: memory.sh <command> [OPTIONS]
 
@@ -11,6 +13,8 @@ Commands:
   init                      Initialize selected SQLite spaces, safely repeatable
   upgrade-sync              Explicit v1 -> v2 upgrade with standalone v1 backup
   sync-status               Read local schema, pending count, conflicts and cursor
+  conflicts NAME            Inspect one exact v2 document and its active conflict branches
+  resolve --input FILE|-     Resolve inspected conflicts on one v2 document
   import --source DIR       Import Markdown into --root (destination); explicit only
   migrate --source DIR      Alias for import; source is never modified
   export --destination DIR  Export raw Markdown to a new directory
@@ -54,6 +58,10 @@ Delete JSON:
   {"name":"2026-01-01-topic.md","expectedRevision":"from read"}
   Requires an existing session record and its current full revision.
   SQLite v2 retains a tombstone and history; MEMORY.md and INDEX.md are protected.
+Resolve JSON:
+  {"name":"MEMORY.md","expectedRevision":"from conflicts","conflictToken":"from conflicts","branchId":"operationId from conflicts"}
+  Or use "content":"Complete merged Markdown body" instead of branchId.
+  One space (shared by default), no YAML frontmatter, no tombstone recovery.
 
 Successful operations print one JSON object to stdout. Errors print a JSON
 error to stderr: exit 2 for usage/input, 1 for an operation failure. No LLM or
@@ -72,6 +80,8 @@ const usageError = (message) => { throw new UsageError(message); };
 const allowed = {
   "upgrade-sync": ["root", "space", "dry-run"],
   "sync-status": ["root", "space"],
+  conflicts: ["root", "space"],
+  resolve: ["root", "space", "input"],
   init: ["root", "space", "dry-run"],
   import: ["root", "source", "space", "dry-run"],
   migrate: ["root", "source", "space", "dry-run"],
@@ -115,12 +125,14 @@ function parse(args) {
   for (const key of Object.keys(options)) {
     if (key !== "backend" && !allowed[command].includes(key)) usageError(`--${key} is not supported by ${command}.`);
   }
-  const operands = command === "search" || command === "read" ? 1 : 0;
+  const operands = ["search", "read", "conflicts"].includes(command) ? 1 : 0;
   if (positional.length !== operands) usageError(`${command} requires ${operands} positional argument(s); quote a multi-word query.`);
   const space = options.space ?? "shared";
   if (!["shared", "private", "both"].includes(space)) usageError("--space must be shared, private, or both.");
-  const writing = ["record", "update", "delete"].includes(command);
+  const writing = ["record", "update", "delete", "resolve"].includes(command);
   if (writing && space === "both") usageError("Write to one space at a time.");
+  if (command === "conflicts" && space === "both") usageError("Conflict inspection requires one explicit space at a time.");
+  if (command === "conflicts" && !conflictName(positional[0])) usageError("Use MEMORY.md or an exact session record filename without directories.");
   if (writing && !options.input) usageError(`${command} requires --input FILE or --input - for stdin.`);
   if (["import", "migrate"].includes(command) && !options.source) usageError(`${command} requires --source DIR.`);
   if (command === "export" && !options.destination) usageError("export requires --destination DIR.");
@@ -139,7 +151,8 @@ function parse(args) {
 async function inputJSON(filename, command) {
   if (filename === "-" && process.stdin.isTTY) usageError("Pipe JSON to stdin when using --input -.");
   const raw = filename === "-" ? await Bun.stdin.text() : await readFile(filename, "utf8");
-  if (raw.length > 100000) usageError("JSON input must be at most 100000 characters.");
+  const limit = command === "resolve" ? 6 * MAX_SYNC_RAW + 1000 : 100_000;
+  if (raw.length > limit) usageError(`JSON input must be at most ${limit} characters.`);
   let input;
   try { input = JSON.parse(raw); } catch { usageError("Input must be valid JSON."); }
   if (!input || typeof input !== "object" || Array.isArray(input)) usageError("Input must be a JSON object.");
@@ -147,6 +160,7 @@ async function inputJSON(filename, command) {
     record: [["topic", "goal", "conclusion", "details"], ["decisions", "nextSteps", "preferences"]],
     update: [["content", "expectedRevision"], ["name", "section"]],
     delete: [["name", "expectedRevision"], []],
+    resolve: [["name", "expectedRevision", "conflictToken"], ["branchId", "content"]],
   }[command];
   const fields = [...required, ...optional];
   for (const [key, value] of Object.entries(input)) {
@@ -156,6 +170,15 @@ async function inputJSON(filename, command) {
   for (const key of required) if (!input[key]?.trim()) usageError(`${key} must be a non-empty string.`);
   if (command === "record" && (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(input.topic) || input.topic.length > 80)) {
     usageError("topic must be an English/pinyin slug of at most 80 characters.");
+  }
+  if (command === "resolve") {
+    if (!conflictName(input.name)) usageError("Use MEMORY.md or an exact session record filename without directories.");
+    for (const key of ["expectedRevision", "conflictToken"]) {
+      if (!/^[a-f0-9]{64}$/.test(input[key])) usageError(`${key} must be the SHA-256 value from conflicts.`);
+    }
+    if (!resolutionChoice(input)) {
+      usageError("Supply exactly one active branchId or a non-empty merged Markdown content without YAML frontmatter.");
+    }
   }
   return input;
 }
@@ -173,6 +196,11 @@ export async function run(args, env = process.env) {
   if (["upgrade-sync", "sync-status"].includes(command)) {
     if (space === "both") usageError("Sync administration requires one explicit space at a time.");
     return { result: await (command === "upgrade-sync" ? upgradeSync : syncStatus)({ root, scope: space, dryRun: options["dry-run"] ?? false }) };
+  }
+  if (command === "conflicts") return { result: await documentConflicts(store, space, operand) };
+  if (command === "resolve") {
+    const { name, ...resolution } = await inputJSON(options.input, command);
+    return { result: await documentConflicts(store, space, name, resolution) };
   }
   if (["init", "import", "migrate", "export"].includes(command)) {
     const dryRun = options["dry-run"] ?? false;

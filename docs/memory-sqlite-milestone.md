@@ -72,8 +72,9 @@ Schema v1 remains supported and is the default for initialization. The subsequen
 [sync integration milestone](memory-sync-milestone.md) adds v2 runtime ordinary
 writes, stable sections, inbox/cursors/conflicts/tombstones and local-relay
 idempotency. `upgrade-sync [--dry-run]` explicitly upgrades one stopped space with
-a standalone v1 backup; ordinary reads/writes never upgrade. Conflict resolution,
-restoration, operator bootstrap/transport, encryption, Worker/D1 and general
+a standalone v1 backup; ordinary reads/writes never upgrade. Local CLI conflict
+inspection and resolution are available for v2. Tombstone restoration, operator
+bootstrap/transport, encryption, Worker/D1 and general
 backup/restore tooling remain future work. Explicit
 `memory.sh init`, `import` (alias `migrate`) and `export` support absolute roots,
 selected spaces and dry-run. See the README for full commands. Import preserves
