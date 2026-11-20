@@ -73,9 +73,10 @@ Schema v1 remains supported and is the default for initialization. The subsequen
 writes, stable sections, inbox/cursors/conflicts/tombstones and local-relay
 idempotency. `upgrade-sync [--dry-run]` explicitly upgrades one stopped space with
 a standalone v1 backup; ordinary reads/writes never upgrade. Local CLI conflict
-inspection and resolution are available for v2. Tombstone restoration, operator
-bootstrap/transport, encryption, Worker/D1 and general
-backup/restore tooling remain future work. Explicit
+inspection and resolution, operator bootstrap and push/pull through one marked
+local SQLite relay are available for v2. Tombstone restoration, cloud
+auth/transport/encryption, Worker/D1 and general backup/restore tooling remain
+future work. Explicit
 `memory.sh init`, `import` (alias `migrate`) and `export` support absolute roots,
 selected spaces and dry-run. See the README for full commands. Import preserves
 raw UTF-8 bytes, existing IDs and metadata, leaves sources untouched, rejects

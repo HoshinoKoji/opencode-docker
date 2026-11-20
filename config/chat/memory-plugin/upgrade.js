@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { writeFile, open } from "node:fs/promises";
 import { SQLiteMemoryStore } from "./sqlite.js";
 import { migrateSyncV2 } from "./sync-prototype.js";
+import { transportMarker } from "./sync-role.js";
 
 // Explicit administration only: callers stop ALL writers, including old loaded
 // plugin code. Ordinary open/init/read/write never invoke this function.
@@ -54,10 +55,15 @@ export async function syncStatus({ root, scope = "shared" }) {
     if (!db) return { scope, schema: null };
     const schema = db.query("PRAGMA user_version").get().user_version;
     if (schema === 1) return { scope, schema, upgradeRequired: true };
-    return { scope, schema, ...db.query("SELECT space, genesis FROM sync_info").get(),
-      pending: db.query("SELECT count(*) AS count FROM sync_outbox").get().count,
-      conflicts: db.query("SELECT * FROM sync_conflicts ORDER BY document, left_id, right_id").all(),
-      tombstones: db.query("SELECT id FROM sync_views WHERE deleted = 1").all(),
-      cursor: db.query("SELECT stream, position FROM sync_cursor").get() };
+    return db.transaction(() => {
+      const marker = transportMarker(db);
+      return { scope, schema, ...db.query("SELECT space, genesis FROM sync_info").get(),
+        ...(marker ?? { role: "unbound" }),
+        ...(marker?.role === "relay" ? db.query("SELECT coalesce(max(sequence), 0) AS head FROM sync_log").get() : {}),
+        pending: db.query("SELECT count(*) AS count FROM sync_outbox").get().count,
+        conflicts: db.query("SELECT * FROM sync_conflicts ORDER BY document, left_id, right_id").all(),
+        tombstones: db.query("SELECT id FROM sync_views WHERE deleted = 1").all(),
+        cursor: db.query("SELECT stream, position FROM sync_cursor").get() };
+    })();
   });
 }

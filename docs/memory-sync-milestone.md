@@ -76,13 +76,14 @@ byte-for-byte unchanged. Historical whole-document snapshots are retained. New t
 | `sync_conflicts` | Active concurrent overlapping operation pairs |
 | `sync_outbox`, `sync_log` | Pending local operations and append-only relay sequence |
 | `sync_cursor`, `sync_inbox` | One relay stream's durable cursor and sequence-to-operation bindings |
+| `sync_transport` | Optional operator-managed role and stable local stream ID; absent on ordinary unbound v2 stores |
 
 The v1 outbox is preserved as historical local state. Its operations are
 **not** silently interpreted as section-aware sync operations. Replicas start
 from identical v1 seed snapshots (including document heads). A genesis hash binds
-every new operation to that seed; independently imported databases require future
-bootstrap/reconciliation tooling. Existing historical versions are not replayed
-to the relay. Runtime reads/search/recall/index and export use `sync_views` joined
+every new operation to that seed; independently upgraded databases are separate
+spaces. Operator bootstrap clones the same genesis and retains historical v1
+versions; these versions are not streamed as operations. Runtime reads/search/recall/index and export use `sync_views` joined
 to logical names in `sync_seed`, excluding tombstones. They see engine-received edits
 and newly created records. Local runtime creation and updates append legacy `versions` and
 refresh `documents`, using the same operation ID as the sync operation, in the same
@@ -122,7 +123,8 @@ revision. Its sync operation, branch snapshot, projection and outbox commit
 together. The tombstoned name and ID remain reserved against local record
 retries and imports. Markdown export contains only visible documents and does
 not carry tombstones when imported into a fresh database.
-`sync-status` reports pending count, conflict operation IDs, tombstones and cursor.
+`sync-status` reports role, stream (if bound), pending count, conflict operation
+IDs, tombstones, cursor and relay head (on a relay).
 It is read-only CLI administration, not an agent/MCP sync tool.
 
 ## Stable sections and conservative merge
@@ -253,6 +255,75 @@ History is immutable; the resolution changes projection, not old snapshots.
   HTTP byte-budget or production scaling policy. SQLite busy errors leave state
   unchanged; caller retries after contention. No automatic network loop exists.
 
+## Operator local relay and device bootstrap
+
+Use the updated CLI and runtime on all devices. The example paths are
+placeholders; first upgrade the original device as described above. Create the
+empty `/absolute/relay` and `/absolute/new-device` roots before running:
+
+```sh
+./memory.sh sync-relay-init --root /absolute/first-device --relay /absolute/relay --space shared --dry-run
+./memory.sh sync-relay-init --root /absolute/first-device --relay /absolute/relay --space shared
+./memory.sh sync-push --root /absolute/first-device --relay /absolute/relay --space shared
+./memory.sh sync-bootstrap --root /absolute/new-device --relay /absolute/relay --space shared --dry-run
+./memory.sh sync-bootstrap --root /absolute/new-device --relay /absolute/relay --space shared
+./memory.sh sync-pull --root /absolute/new-device --relay /absolute/relay --space shared
+```
+
+Each invocation selects one authorized space by explicit `--space shared` or
+`--space private`; `both` is unavailable. Both absolute roots must be real,
+distinct existing directories. The selected destination `.memory-db/<space>.sqlite`
+and sidecars (`-wal`, `-shm`, `-journal`) must be absent. Other spaces are left
+alone. Use a trusted local filesystem that supports SQLite locking, hard links
+and fsync; exclude concurrent destination writers during setup and do not use
+network shares or file sync services. These are CLI operator actions, outside
+agent/MCP tools and subject to caller scope and consent restrictions.
+
+- **Relay setup:** `sync-relay-init` takes one consistent read snapshot of an
+  unbound v2 first device via Bun SQLite serialization. The snapshot contains
+  committed WAL pages, not uncommitted writes. It retains the space ID, genesis,
+  v1 history, all v2 operations and sequences (including pending causal
+  ancestors), branches, conflicts, projections and tombstones. The marked
+  relay gets a random stable stream ID, no device cursor/inbox and no v2 outbox.
+  Setup leaves the first device's pending work intact. Its first compatible
+  push or pull binds it to the selected relay. Use only one relay for a space.
+- **New device:** `sync-bootstrap` takes the same kind of snapshot from a
+  marked relay. It records the relay's stream, an empty inbox/outbox and cursor
+  0. The new device can read and edit immediately. Pulling replays known
+  operations idempotently and builds a verified sequence-to-operation map.
+  Direct device-to-device cloning and merging independently upgraded spaces
+  are outside this workflow. The retained v1 outbox is frozen history and is
+  never sent by these commands.
+- **Publication:** Setup validates the standalone copy (SQLite integrity,
+  foreign keys, role, and sync history/sequence and projection checks). It
+  fsyncs an exclusive mode-0600 staged file and publishes it with a
+  same-directory no-overwrite link, then fsyncs the directory. A newly created
+  `.memory-db` directory uses mode 0700; existing root and directory permissions
+  are caller-managed. Dry runs validate without publishing. An interruption
+  can leave a mode-0600 `.snapshot-*.tmp`; with destination writers stopped,
+  remove just the stale staging name after confirming no setup is active.
+  The final database is either absent or a complete snapshot; never discard a
+  database or its sidecars to clear an uncertain setup outcome.
+- **Push/pull:** Run `sync-push` and `sync-pull` on either device with the same
+  `--relay` after edits, using `--limit 1..100` if desired (default 100).
+  Each command handles one batch/page; repeat while `more` is true. Push
+  reports `pushed` (acknowledged, including duplicates) and `pending`. It
+  selects outbox entries in dependency-first log order and only acknowledges
+  matching receipts after the relay transaction has durably committed. A crash
+  between commit and acknowledgement leaves retryable outbox entries. Pull
+  reports `pulled` (page size), durable `position` and the observed relay `head`.
+  Failed pages leave the cursor unchanged. No transaction holds a lock on both
+  databases; a busy error can be retried.
+- **Identity and limits:** Each transfer checks the selected scope, space ID,
+  genesis, and role. A bound device refuses a different relay stream and checks
+  the last received operation against the relay. Use `sync-status` for role,
+  stream, pending count and cursor or relay head. Updated runtime writers and
+  conflict resolution refuse relay writes; keep the relay separate from runtime
+  roots, including any old loaded writer. Never fork, roll back, or replace the
+  active relay under attached devices. There is no detach, cursor reset,
+  failover, pruning, authentication or encryption. Snapshots include plaintext
+  documents and history; protect all three roots accordingly.
+
 ## Verification and next integration boundary
 
 The focused suites cover additive migration and rollback, dual-schema runtime
@@ -274,17 +345,19 @@ tombstone races, malformed-page rollback and the v1 CLI boundary. The publish
 image's synthetic Bun check includes the sync suite. Verification for local
 resolution: 111 Bun tests, 113 Python tests, and `git diff --check` passed.
 
-Remaining work includes tombstone restoration and operator bootstrap/local sync
-commands. Bootstrap currently has
-only synthetic tests: clone one coherent upgraded snapshot into new roots before
-editing, retaining the same space/genesis; do not independently upgrade replicas
-and assume they belong to one stream. There is no user-facing bootstrap or sync
-command. Do not manually edit operation payloads, outboxes or conflict tables. The
-current rebuild algorithm recomputes the retained DAG and is intended for small
-synthetic histories. Incremental indexing and scale testing are still required.
+The operator CLI suite runs real synthetic first-device/relay/new-device
+lifecycles, including committed WAL visibility, pending dependencies, tombstones,
+disjoint edits, conflicts and resolution, crash before acknowledgement, invalid
+receipts, failed page application, pagination, concurrent snapshot publication,
+and role/identity/path refusals. The publish image check includes this suite.
+Verification for local relay: 107 Bun memory tests, 11 Bun MCP tests, 113 Python
+tests, and `git diff --check` passed. The current rebuild algorithm recomputes
+the retained DAG and is intended for small histories. Incremental indexing and
+scale testing are still required. Do not manually edit operation payloads,
+outboxes or conflict tables.
 
 Worker/D1 conditional-write races, HTTP transport, authentication/revocation,
-encryption, key recovery, deployment, general backup/restore tooling, stream reset and
+encryption, key recovery, deployment, tombstone restoration, general backup/restore tooling, stream reset and
 multi-relay support remain deferred. The previously verified official references
 are in [the SQLite milestone](memory-sqlite-milestone.md#verified-sources-2026-11-16).
 Local SQLite and sync execution stay trusted plaintext; optional cryptography

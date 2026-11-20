@@ -6,13 +6,18 @@ import { importMarkdown, exportMarkdown, safeRoot } from "./transfer.js";
 import { upgradeSync, syncStatus } from "./upgrade.js";
 import { conflictName, documentConflicts } from "./sync-admin.js";
 import { MAX_SYNC_RAW, resolutionChoice } from "./sync-prototype.js";
+import { bootstrapLocal, transferLocal } from "./sync-local.js";
 
 const help = `Usage: memory.sh <command> [OPTIONS]
 
 Commands:
   init                      Initialize selected SQLite spaces, safely repeatable
   upgrade-sync              Explicit v1 -> v2 upgrade with standalone v1 backup
-  sync-status               Read local schema, pending count, conflicts and cursor
+  sync-status                Read local schema, role, pending count, conflicts and cursor
+  sync-relay-init            Copy an upgraded device into a new marked local relay
+  sync-bootstrap             Copy a marked local relay into a new device
+  sync-push                 Transfer one pending batch from device to local relay
+  sync-pull                 Apply one page from local relay to device
   conflicts NAME            Inspect one exact v2 document and its active conflict branches
   resolve --input FILE|-     Resolve inspected conflicts on one v2 document
   import --source DIR       Import Markdown into --root (destination); explicit only
@@ -30,10 +35,13 @@ Options (also accept --flag=VALUE):
   --backend sqlite          SQLite only; Markdown runtime is rejected
   --source DIR              Absolute Markdown source root for import/migrate
   --destination DIR         Absolute new output root for export
-  --dry-run                 Validate/preview init/import/migrate/export/upgrade-sync
+  --dry-run                 Preview init/import/migrate/export/upgrade-sync or snapshot setup
   --space shared|private|both
                             Default shared; both supports reads and administration
-  --limit N                 Search matches (1..20) or read characters (1..20000)
+  --relay DIR                Absolute local relay root for sync-relay-init/bootstrap/push/pull
+                            These commands require explicit --root and --space shared|private
+  --limit N                  Search matches (1..20), read characters (1..20000),
+                            or sync-push/pull batch size (1..100, default 100)
   --offset N                Read body offset in characters (default: 0)
   --section TITLE           Exact heading title without #; read only (not INDEX.md)
                             Includes nested sections; pagination is section-relative
@@ -77,9 +85,16 @@ ID for a new record. The returned requestId can be reused after a successful cal
 
 class UsageError extends Error {}
 const usageError = (message) => { throw new UsageError(message); };
+const localSnapshots = ["sync-relay-init", "sync-bootstrap"];
+const localTransfers = ["sync-push", "sync-pull"];
+const localCommands = [...localSnapshots, ...localTransfers];
 const allowed = {
   "upgrade-sync": ["root", "space", "dry-run"],
   "sync-status": ["root", "space"],
+  "sync-relay-init": ["root", "space", "relay", "dry-run"],
+  "sync-bootstrap": ["root", "space", "relay", "dry-run"],
+  "sync-push": ["root", "space", "relay", "limit"],
+  "sync-pull": ["root", "space", "relay", "limit"],
   conflicts: ["root", "space"],
   resolve: ["root", "space", "input"],
   init: ["root", "space", "dry-run"],
@@ -103,7 +118,7 @@ function parse(args) {
     if (argument === "--help" || argument === "-h") return { help: true };
     if (!argument.startsWith("-")) { positional.push(argument); continue; }
     const match = /^--([a-z-]+)(?:=(.*))?$/s.exec(argument);
-    if (!match || !["backend", "root", "source", "destination", "dry-run", "space", "limit", "offset", "section", "input", "request-id"].includes(match[1])) {
+    if (!match || !["backend", "root", "source", "destination", "relay", "dry-run", "space", "limit", "offset", "section", "input", "request-id"].includes(match[1])) {
       usageError(`Unknown option: ${argument}. Use --help for usage.`);
     }
     const key = match[1];
@@ -132,6 +147,15 @@ function parse(args) {
   const writing = ["record", "update", "delete", "resolve"].includes(command);
   if (writing && space === "both") usageError("Write to one space at a time.");
   if (command === "conflicts" && space === "both") usageError("Conflict inspection requires one explicit space at a time.");
+  if (localCommands.includes(command)) {
+    if (!options.space || space === "both") usageError(`${command} requires explicit --space shared or private.`);
+    if (!options.root || !path.isAbsolute(options.root) || !options.relay || !path.isAbsolute(options.relay)) {
+      usageError(`${command} requires explicit absolute --root DIR and --relay DIR.`);
+    }
+    if ([options.root, options.relay].some((value) => value.split(path.sep).includes(".."))) {
+      usageError("Local sync roots must not contain '..' path components.");
+    }
+  }
   if (command === "conflicts" && !conflictName(positional[0])) usageError("Use MEMORY.md or an exact session record filename without directories.");
   if (writing && !options.input) usageError(`${command} requires --input FILE or --input - for stdin.`);
   if (["import", "migrate"].includes(command) && !options.source) usageError(`${command} requires --source DIR.`);
@@ -140,8 +164,9 @@ function parse(args) {
     if (options[key] === undefined) continue;
     if (!/^\d+$/.test(options[key]) || !Number.isSafeInteger(Number(options[key]))) usageError(`--${key} must be an integer.`);
     options[key] = Number(options[key]);
-    if (key === "limit" && (options[key] < 1 || options[key] > (command === "search" ? 20 : 20000))) {
-      usageError(`--limit must be between 1 and ${command === "search" ? 20 : 20000}.`);
+    const max = localTransfers.includes(command) ? 100 : command === "search" ? 20 : 20000;
+    if (key === "limit" && (options[key] < 1 || options[key] > max)) {
+      usageError(`--limit must be between 1 and ${max}.`);
     }
   }
   if (options["request-id"] && options["request-id"].length > 200) usageError("--request-id must be at most 200 characters.");
@@ -191,6 +216,13 @@ export async function run(args, env = process.env) {
   const explicitRoot = options.root ?? env.MEMORY_ROOT;
   if (!explicitRoot || !path.isAbsolute(explicitRoot)) usageError("SQLite requires an explicit absolute --root or MEMORY_ROOT.");
   const root = path.resolve(explicitRoot);
+  if (localCommands.includes(command)) {
+    createMemoryStore(root, { backend }); // Validate the selected backend without opening it.
+    const settings = { root, relayRoot: path.resolve(options.relay), scope: space };
+    return { result: await (localSnapshots.includes(command) ?
+      bootstrapLocal({ ...settings, initializeRelay: command === "sync-relay-init", dryRun: options["dry-run"] }) :
+      transferLocal({ ...settings, push: command === "sync-push", limit: options.limit ?? 100 })) };
+  }
   if (!(await stat(root)).isDirectory()) usageError("--root must refer to an existing directory.");
   const store = createMemoryStore(root, { backend });
   if (["upgrade-sync", "sync-status"].includes(command)) {

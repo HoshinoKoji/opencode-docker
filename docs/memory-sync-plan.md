@@ -104,4 +104,6 @@ INDEX 作为数据库派生视图提供兼容结果，不再维护第二份权�
 
 v2 本地 CLI 已支持 `conflicts NAME` 和 `resolve --input FILE|-`：每次操作一个授权空间和一个确切文件名。解决操作同时校验可见 revision 和完整因果状态 token，保留可见元数据、ID、分支历史及独立的可见编辑；复杂分支需手工合并完整 Markdown。重放仅解决该操作因果闭包内的已见冲突对，迟到编辑和并发解决会形成新的冲突。无需再次升级 schema，使用前须更新并重新加载所有 v2 写入端和同步引擎。
 
-tombstone 可检查但不会恢复。恢复、面向操作者的 bootstrap/推拉命令、Worker/D1、可选加密与通用备份恢复 CLI 仍待实现。普通写入遇到冲突或 tombstone 会阻止覆盖。没有云同步、部署或后台网络循环。
+面向操作者的本地 SQLite 中继已实现：`sync-relay-init` 从已升级且未绑定的首台设备创建中继；`sync-bootstrap` 从中继快照创建新设备；`sync-push` / `sync-pull` 每次传输一批或一页，失败可对同一中继重试。四个命令均要求不同的绝对 `--root`、`--relay` 和显式的单一 `--space shared|private`。快照保留空间 ID、genesis、操作、分支与 tombstone；新设备从游标 0 开始验证重放，绑定后拒绝不同流。见[本地中继操作及限制](memory-sync-milestone.md#operator-local-relay-and-device-bootstrap)。
+
+tombstone 可检查但不会恢复。普通写入遇到冲突或 tombstone 会阻止覆盖。后续为 Worker/D1、云端鉴权与传输、可选加密、恢复与通用备份恢复 CLI；目前没有部署或后台网络循环。

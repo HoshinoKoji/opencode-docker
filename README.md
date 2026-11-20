@@ -798,10 +798,37 @@ is unchanged. Inspection includes raw text; use it only in an authorized context
 These are CLI-only administrative commands; caller permissions and consent still apply.
 
 Tombstones may be inspected but cannot be resolved or restored; late deletes still
-hide resolved documents. Operator bootstrap/push/pull commands, Cloudflare transport,
-encryption and a general backup/restore CLI remain deferred.
-Local storage and sync execution are trusted plaintext; optional encryption
-belongs at upload/download boundaries.
+hide resolved documents.
+
+#### Bootstrap and sync through a local SQLite relay
+
+Use an already upgraded first device and create two distinct directories for
+the local relay and the new device. All commands select one authorized space
+explicitly. The sample paths are placeholders:
+
+```bash
+./memory.sh sync-relay-init --root /absolute/first-device --relay /absolute/relay --space shared --dry-run
+./memory.sh sync-relay-init --root /absolute/first-device --relay /absolute/relay --space shared
+./memory.sh sync-push --root /absolute/first-device --relay /absolute/relay --space shared
+./memory.sh sync-bootstrap --root /absolute/new-device --relay /absolute/relay --space shared
+./memory.sh sync-pull --root /absolute/new-device --relay /absolute/relay --space shared
+./memory.sh sync-status --root /absolute/new-device --space shared
+```
+
+Run `sync-push` and `sync-pull` on either device after edits. Each transfers one
+batch/page (`--limit 1..100`, default 100); repeat while `more` is true. After an
+interruption, retry the same command with the same relay. The new device starts
+with the relay's documents, history and tombstones, an empty pending queue and a
+zero pull cursor. Pull safely replays known operations. A bound device refuses a
+different relay stream. `sync-bootstrap` also accepts `--dry-run`. Snapshot
+commands require the selected destination database and its SQLite sidecars to
+be absent, and ordinary writes to the marked relay are blocked.
+
+These are operator-only commands for trusted plaintext SQLite files on a local
+filesystem, under the caller’s existing scope and consent rules. Use one live relay
+per space; do not replace or roll it back under attached devices. Cloudflare
+transport, auth, encryption and general backup/restore remain deferred.
+See [local relay setup, retry behavior and limits](docs/memory-sync-milestone.md#operator-local-relay-and-device-bootstrap).
 See also [runtime architecture and references](docs/memory-sqlite-milestone.md).
 Keep database directories and any future sync credentials/keys or exports in the
 ignored `.memory-db/`, `.memory-sync/` and `.memory-exports/` locations.
@@ -1022,7 +1049,7 @@ Run the daemon-free version-smoke, configuration-mirror, and launcher checks:
 
 ```bash
 uv run --no-project --with pytest pytest tests -q
-bun test tests/memory-plugin.test.js tests/memory-cli.test.js tests/memory-sqlite.test.js tests/memory-transfer.test.js tests/memory-sync.test.js
+bun test tests/memory-plugin.test.js tests/memory-cli.test.js tests/memory-sqlite.test.js tests/memory-transfer.test.js tests/memory-sync.test.js tests/memory-local-sync.test.js
 bun install --cwd config/chat/memory-mcp --frozen-lockfile
 bun test ./config/chat/memory-mcp/server.test.js
 sh -n start.sh

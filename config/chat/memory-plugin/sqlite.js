@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { MemoryStore, sessionMetadata } from "./store.js";
 import { decode, legacyMetadata, SESSION_FILENAME } from "./format.js";
 import { SyncPrototype } from "./sync-prototype.js";
+import { transportMarker } from "./sync-role.js";
 
 const hash = (text) => createHash("sha256").update(text).digest("hex");
 
@@ -67,6 +68,9 @@ export class SQLiteMemoryStore extends MemoryStore {
       if (requireSync && version !== 2) throw new Error("Conflict administration requires SQLite schema v2. Use upgrade-sync explicitly with writers stopped.");
       if (![0, 1, 2].includes(version)) throw new Error(`Unsupported memory database schema: ${version}.`);
       if (writing) {
+        if (version === 2 && transportMarker(db)?.role === "relay") {
+          throw new Error("Regular memory writes are disabled on a local sync relay.");
+        }
         chmodSync(filename, 0o600);
         db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;");
         if (version === 0) {
